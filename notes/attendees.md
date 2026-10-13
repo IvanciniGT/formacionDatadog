@@ -2,6 +2,8 @@
 
 Datadog org: https://app.datadoghq.eu (EU site). Role: Datadog Standard. Prefix everything you create with your name.
 
+Your course mailbox (the Datadog invitation is there): https://mail.ionos.es — the password is given in the chat.
+
 | Attendee        | Login (email)                        |
 |-----------------|--------------------------------------|
 | Borja R.        | borja.datadog@ivanosuna.com          |
