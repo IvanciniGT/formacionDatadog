@@ -409,3 +409,240 @@ Y es el orden de arriba a abajo de un dashboard de guardia.
     CPU al 90 % con los clientes contentos  ->  a un dashboard. NO se despierta a nadie.
 
 > La alerta de las 3 am que luego no era nada... casi siempre era una alerta sobre una CAUSA.
+
+---
+
+# DE DÓNDE SALEN LOS DATOS: la tienda por dentro
+
+El código y el despliegue están en la carpeta  tienda/  de este repo (con su README).
+
+## Las piezas de la app shop-api (Java, Spring Boot)
+
+    Librería                       Para qué
+    ----------------------------   ------------------------------------------------------------------
+    spring-boot-starter-web        el API REST (HTTP, JSON, Tomcat)
+    spring-boot-starter-data-jpa   acceso a la base de datos (Hibernate)
+    spring-boot-starter-actuator   /actuator/health/liveness y readiness -> sondas de KUBERNETES
+    postgresql                     el driver de Postgres
+
+    LO DE DATADOG:
+    dd-java-agent.jar              NO está en el código. Se carga al arrancar:  java -javaagent:dd-java-agent.jar
+                                   = TODO EL APM SIN TOCAR CÓDIGO: trazas de HTTP / Spring / SQL,
+                                     trace id en los logs, métricas de la JVM, profiler, enlace con DBM
+    dd-trace-api                   la anotación @Trace (un paso de negocio como span)
+    opentelemetry-api              añadir etiquetas de negocio a la traza (estándar, no atado a Datadog)
+    java-dogstatsd-client          enviar MÉTRICAS CUSTOM al agente (UDP, puerto 8125)
+
+Sobre  com.timgroup.statsd.StatsDClient : el paquete NO se llama "datadog".
+    StatsD: protocolo abierto (Etsy, 2011).  pedidos:1|c
+    TIM Group: hizo un cliente Java (paquete com.timgroup.statsd)
+    Datadog lo amplió (DogStatsD: + ETIQUETAS, distribuciones, eventos) y mantuvo el nombre.
+
+## Tres orígenes de métricas en la tienda
+
+    Origen                           Qué métricas                                         ¿Código?
+    ------------------------------   --------------------------------------------------   ----------------------------
+    Agente del NODO                  CPU, RAM, red de cada contenedor, reinicios,         ninguno
+                                     Postgres (integración)
+    Agente de JAVA (-javaagent)      peticiones, errores, latencia por endpoint           ninguno
+                                     (trace.servlet.request.*), JVM (heap, GC)
+    Metrics.java + llamadas          NEGOCIO: pedidos (count), importe (distribution),    SÍ: hay que decidir EN QUÉ
+                                     duración del pago, stock (gauge)                     LÍNEA pasa el hecho de negocio
+
+Metrics.java es un componente de Spring que NO RECOGE NADA SOLO.
+Solo envía cuando el código de negocio lo llama:
+
+    // OrderService, al terminar de crear un pedido
+    metrics.orderCreated(product.getCategory(), order.getStatus());     // count
+    metrics.orderValue(order.getTotal().doubleValue(), ...);            // distribution
+
+-> Datadog NO SABE qué es "un pedido pagado". Alguien lo tiene que PEDIR (PO) y alguien lo tiene que PROGRAMAR.
+
+## Y nginx?
+
+No hemos configurado NADA de métricas en nginx. Aun así tenemos sus señales doradas:
+    - CPU/RAM del contenedor           <- agente del nodo
+    - peticiones, errores, latencia    <- USM (eBPF: mira el tráfico, sin tocar nginx)
+    - sus LOGS en JSON                 <- lo único que tocamos: el formato del access log
+                                          (y de ahí se pueden sacar métricas: la línea de log como métrica de ayer)
+Lo que NO tenemos: la integración de nginx (conexiones activas, en espera...).
+    Habría que activar stub_status en nginx + una anotación para el agente. Solo le interesa a quien lo opera.
+
+## Actuator (management: ... probes) -> es para KUBERNETES, no para Datadog
+
+    /actuator/health/liveness     ¿el proceso está vivo?        Si falla -> Kubernetes REINICIA el pod
+    /actuator/health/readiness    ¿listo para recibir tráfico?  Si falla -> Kubernetes deja de mandarle peticiones
+Datadog no ve la sonda: ve el RESULTADO (reinicios del pod, eventos de Kubernetes).
+
+---
+
+# TRAZAS Y SPANS: dónde se configuran
+
+Casi todo es AUTOMÁTICO: nadie "dibuja" la traza.
+
+    Qué                                    Dónde                                   En la tienda
+    ------------------------------------   -------------------------------------   ------------------------------------------
+    Que HAYA trazas                        arrancar Java con el agente             Dockerfile: -javaagent:dd-java-agent.jar
+    Spans que se crean SOLOS               nada: el agente reconoce las            petición HTTP, controlador de Spring,
+                                           librerías conocidas                     cada consulta SQL (llamadas HTTP, Kafka...)
+    Opciones del agente de Java            variables DD_* del despliegue           k8s/app.yaml: DD_AGENT_HOST, muestreo,
+                                                                                   trace id en logs y en SQL, profiler
+    Spans y etiquetas DE NEGOCIO           en el código                            @Trace en PaymentGateway.charge()
+                                                                                   Span.current().setAttribute(...) en OrderService
+    Dónde NACE el trace id                 en el navegador (RUM)                   index.html: allowedTracingUrls
+    El agente del nodo acepta trazas       values.yaml                             apm.portEnabled (puerto 8126)
+    Cuánto se GUARDA                       en la web de Datadog                    filtros de retención (APM)
+    Sin tocar código, un método            variable                                DD_TRACE_METHODS=...OrderService[place]
+
+LA TRAZA LA MONTA EL AGENTE.
+Nosotros decidimos: SI hay traza (-javaagent), CON QUÉ ETIQUETAS (variables) y QUÉ PASOS DE NEGOCIO añadir (código).
+
+## @Trace: un paso de negocio como span
+
+    @Trace(operationName = "payment.charge")
+    public String charge(String customer, double amount) { ... }
+
+Cada vez que se ejecuta el método:
+    - abre un span al entrar, lo cierra al salir  (duración = lo que tardó)
+    - lo cuelga COMO HIJO del span activo (el de la petición)
+    - si lanza una excepción: span en ROJO, con tipo, mensaje y traza del error -> Error Tracking
+    - el span tiene su propio span_id: el que llevan los logs escritos dentro del método
+
+    POST /api/orders                    ███████████████████████████████  912 ms
+      OrderController.create            ██████████████████████████████   905 ms
+        SELECT products ...             ▌                                   3 ms
+        PaymentGateway.charge           ████████████████████████           812 ms   <- el de @Trace
+        INSERT INTO orders ...          ▌                                   4 ms
+
+¿Por qué hace falta? El agente reconoce HTTP o SQL, pero charge() es CÓDIGO NUESTRO:
+no sabe que "cobrar" es un paso importante del negocio. La anotación se lo dice.
+
+### "La anotación sola no hace nada"
+
+Igual que @Transactional en Spring: la anotación es una ETIQUETA pegada al método. No tiene código dentro.
+    @Transactional  -> la lee SPRING y envuelve el método con abrir transacción / commit / rollback.
+    @Trace          -> la lee el AGENTE DE JAVA al cargar la clase y envuelve el método:
+
+        Span span = tracer.startSpan("payment.charge", ...);    // <- lo añade el agente (en memoria)
+        try {      ... TU CÓDIGO, tal cual ...    }
+        catch (e)  { span.setError(e); throw e; }                // <- lo añade el agente
+        finally    { span.finish(); }                            // <- lo añade el agente
+
+    SIN -javaagent: la anotación sigue ahí, el método cobra igual... y NO HAY SPAN.
+    = DECLARATIVO: digo QUÉ quiero; el agente se encarga del CÓMO.
+
+### operationName vs resourceName: tipo vs cuál
+
+    operationName (TIPO de trabajo, pocos valores)    resourceName (CUÁL en concreto, muchos valores)
+    ----------------------------------------------    ---------------------------------------------------
+    servlet.request    (una petición HTTP)            POST /api/orders, GET /api/products, GET /api/report...
+    postgresql.query   (una consulta SQL)             SELECT * FROM products WHERE id = ?,  INSERT INTO orders...
+    payment.charge     (un cobro)                     PaymentGateway.charge
+
+    Por OPERACIÓN salen las métricas automáticas:   trace.payment.charge.hits / .errors / latencia
+    Por RECURSO se desglosan:                       ... by {resource_name}   (la lista de endpoints)
+    = variable y sus filas en la tabla de frecuencias.
+
+En NUESTRO caso el resourceName es REDUNDANTE: solo hay un tipo de cobro, y "PaymentGateway.charge"
+es justo lo que el agente pone solo (clase.método). Basta con:  @Trace(operationName = "payment.charge")
+Tendría sentido con 2 proveedores:   payment.charge -> Stripe.charge  /  PayPal.charge
+
+---
+
+# LOGS
+
+## El formato (logback-spring.xml)
+
+    %d %-5level [%thread] [dd.service=%X{dd.service} dd.env=%X{dd.env} dd.version=%X{dd.version}
+                           dd.trace_id=%X{dd.trace_id} dd.span_id=%X{dd.span_id}] %logger - %msg%n
+
+    2026-10-11 07:57:40.105 INFO [http-nio-8081-exec-2] [dd.service=shop-api dd.env=course dd.version=1.0.0
+        dd.trace_id=6acb4173...c691 dd.span_id=5740378446534783345] c.course.shop.service.OrderService - Order created ...
+
+    ConsoleAppender (STDOUT): se escribe POR PANTALLA. En Kubernetes es lo correcto:
+                              el agente del nodo lee lo que cada contenedor escribe por pantalla.
+    level="INFO":             no se escribe DEBUG (menos volumen = menos factura).
+
+## ¿De dónde salen el trace id y el span id del log?
+
+El desarrollador NO los escribe:  log.warn("Out of stock product={} ...", ...)
+
+    1. Entra una petición: el agente de Java crea la traza y su primer span
+       y apunta sus ids en una LIBRETA del hilo que atiende esa petición (en Java: el MDC).
+    2. Cada vez que se abre un paso nuevo (SQL, payment.charge), el agente actualiza el span_id de la libreta.
+    3. El código hace log.warn(...): Logback compone la línea con el formato de arriba.
+       %X{dd.trace_id} = "copia aquí lo que haya en la libreta".
+    4. Todo esto porque en el despliegue está  DD_LOGS_INJECTION=true  (sin ella: campos en blanco).
+
+-> Cada log de una petición queda enlazado a su traza SIN PROGRAMAR NADA.
+-> El span_id dice incluso EN QUÉ PASO se escribió.
+
+## Las etiquetas dd.service / dd.env / dd.version en la línea: ¿redundantes?
+
+En Kubernetes, sí: Datadog ya las saca del despliegue (labels del pod).
+Lo IMPRESCINDIBLE de la línea son trace_id y span_id (cambian en cada petición).
+Tienen sentido FUERA de Kubernetes: una VM leyendo un fichero, Fluentd / Logstash... ahí la línea es la única fuente.
+
+## Un dato duplicado = dos fuentes que pueden no coincidir
+
+En la tienda, la versión llegó a estar escrita en TRES sitios (label del pod, variable DD_VERSION, imagen).
+Para subir de versión había que cambiar los tres. Resultado: desplegamos la 1.0.5 y Datadog decía 1.0.0.
+EN OBSERVABILIDAD ESO FALLA EN SILENCIO.
+
+Bien hecho (tienda/k8s/app.yaml):
+    labels:
+      tags.datadoghq.com/version: "1.0.5"          <- ÚNICO sitio. Lo pone el pipeline.
+    env:
+      - name: DD_VERSION
+        valueFrom: { fieldRef: { fieldPath: "metadata.labels['tags.datadoghq.com/version']" } }   <- la LEE
+
+UN SOLO SITIO, Y QUE LO ACTUALICE EL PIPELINE.
+
+## Los logs deberían ser un REQUISITO
+
+No se especifica cada línea. Se especifican 3 cosas:
+
+### 1. Qué significa cada nivel (igual en toda la empresa)
+
+    Nivel   Significa                                              ¿Despierta a alguien?   En la tienda
+    -----   ----------------------------------------------------   ---------------------   -------------------------------------
+    ERROR   algo falló y EL USUARIO O EL NEGOCIO LO NOTAN           puede (si sube la tasa) pago rechazado, pedido no guardado
+    WARN    algo raro pasó, pero el sistema SE HA RECUPERADO        no; se revisa           reintento con éxito, stock insuficiente
+    INFO    un HECHO DE NEGOCIO o del ciclo de vida                 no                      pedido creado, pago aceptado, arranque
+    DEBUG   detalle para desarrollar                               NO se envía en prod     la SQL con sus parámetros
+
+    Error típico: todo en ERROR (nadie hace caso) o todo en INFO (no se puede filtrar).
+
+### 2. Un CATÁLOGO de los eventos que importan, con campos fijos
+
+    Evento               Nivel   Campos obligatorios                                       Lo pide / para qué
+    ------------------   -----   -------------------------------------------------------   ---------------------------------
+    order.created        INFO    order_id, customer, product, quantity, total, status      PO: auditar pedidos, métrica
+    payment.accepted     INFO    customer, amount, elapsed_ms                              Tech lead: latencia del proveedor
+    payment.rejected     ERROR   customer, amount, elapsed_ms, reason                      Guardia: alerta y causa
+    stock.insufficient   WARN    product, requested, available                             PO: demanda perdida
+
+### 3. Campos COMUNES en todas las líneas
+
+    fecha, nivel, service, env, version, trace_id, span_id (+ usuario si existe)
+    Con los nombres ESTÁNDAR de Datadog (usr.id, http.status_code, duration, error.message...)
+    -> cualquier dashboard / monitor vale para TODOS los servicios.
+
+### Formato: JSON mejor que texto
+
+Nuestra tienda NO sigue el catálogo (a propósito, para el lab de parseo):
+
+    ANTES (lo que hay): mensaje libre
+        log.warn("Out of stock product={} requested={} available={}", ...);
+        ... WARN ... OrderService - Out of stock product=Keyboard requested=3 available=1
+        -> Hay que PARSEARLO (grok). Si mañana alguien cambia "Out of stock" por "No stock"... se rompe EN SILENCIO.
+
+    DESPUÉS (siguiendo el catálogo): nombre de evento fijo, campos fijos, JSON
+        {"level":"WARN","event":"stock.insufficient","product":"Keyboard","requested":3,"available":1,
+         "dd.trace_id":"6acb...","service":"shop-api","env":"course","version":"1.0.5"}
+        -> En Datadog:  @event:stock.insufficient   y sumar @requested por producto. Sin parsear nada.
+
+> Para el PO: "quiero saber cuántos pedidos se pierden por falta de stock"
+    -> alguien tiene que escribir stock.insufficient con product y requested.
+    Si NO ESTÁ EN EL CATÁLOGO... ESE DATO NO EXISTIRÁ.
+    (Y lo que no está en el catálogo, o es DEBUG, no se envía: AHORRA DINERO.)
