@@ -245,19 +245,21 @@ spec:
     metadata:
       labels:
         app: shop-api
-        tags.datadoghq.com/env: course          # unified service tagging: the admission controller
-        tags.datadoghq.com/service: shop-api    # turns these into DD_ENV/DD_SERVICE/DD_VERSION
-        tags.datadoghq.com/version: "1.0.0"     # <- bump on every deploy (same as the image tag)
-        admission.datadoghq.com/enabled: "true"
+        # UNIFIED SERVICE TAGGING: ÚNICO SITIO donde se escriben env / service / version.
+        # - El agente del nodo las pone en las métricas y los logs de este contenedor.
+        # - Las variables DD_* de abajo las LEEN de aquí (no se repiten).
+        # - version: la cambia EL PIPELINE en cada despliegue (igual que el tag de la imagen).
+        tags.datadoghq.com/env: course
+        tags.datadoghq.com/service: shop-api
+        tags.datadoghq.com/version: "1.0.5"
       annotations:
-        ad.datadoghq.com/shop-api.logs: '[{"source":"java","service":"shop-api"}]'
-        # The image already carries dd-java-agent, so no library injection is needed; the admission
-        # controller still injects the DD_* env vars and the agent socket. To use Single Step Instrumentation
-        # instead, remove -javaagent from the Dockerfile and keep the label above.
+        # Autodiscovery de logs: "source" dice QUÉ TIPO de log es (Java) para que Datadog
+        # sepa trocearlo. El "service" no hace falta: ya lo da la label de arriba.
+        ad.datadoghq.com/shop-api.logs: '[{"source":"java"}]'
     spec:
       containers:
         - name: shop-api
-          image: registry.ivanosuna.com/curso/shop-api:1.0.0      # <- Harbor, project curso
+          image: registry.ivanosuna.com/curso/shop-api:1.0.5      # <- la pone el pipeline
           ports:
             - containerPort: 8081
           env:
@@ -269,23 +271,26 @@ spec:
               value: shop
             - name: DB_PASSWORD
               valueFrom: { secretKeyRef: { name: postgres-credentials, key: password } }
+            # Las 3 etiquetas para el TRACER (trazas y logs): se LEEN de las labels del pod.
+            # Ningún valor repetido: si el pipeline cambia la label, esto cambia solo.
             - name: DD_SERVICE
-              value: shop-api
+              valueFrom: { fieldRef: { fieldPath: "metadata.labels['tags.datadoghq.com/service']" } }
             - name: DD_ENV
-              value: course
+              valueFrom: { fieldRef: { fieldPath: "metadata.labels['tags.datadoghq.com/env']" } }
             - name: DD_VERSION
-              value: "1.0.0"                                            # <- bump with the version label
+              valueFrom: { fieldRef: { fieldPath: "metadata.labels['tags.datadoghq.com/version']" } }
+            # Dónde está el agente de Datadog: en el propio nodo (puertos 8126 trazas, 8125 métricas)
             - name: DD_AGENT_HOST
-              valueFrom: { fieldRef: { fieldPath: status.hostIP } }   # the node's agent (hostPort 8126/8125)
-            - name: DD_LOGS_INJECTION
+              valueFrom: { fieldRef: { fieldPath: status.hostIP } }
+            - name: DD_LOGS_INJECTION          # mete trace_id y span_id en cada línea de log
               value: "true"
-            - name: DD_TRACE_SAMPLE_RATE
+            - name: DD_TRACE_SAMPLE_RATE       # guardar el 100 % de las trazas (en una demo)
               value: "1"
-            - name: DD_PROFILING_ENABLED
+            - name: DD_PROFILING_ENABLED       # profiler: qué línea de código gasta CPU/memoria
               value: "true"
-            - name: DD_DBM_PROPAGATION_MODE
+            - name: DD_DBM_PROPAGATION_MODE    # trace id como comentario en el SQL (enlace con DBM)
               value: full
-            - name: DD_TRACE_OTEL_ENABLED
+            - name: DD_TRACE_OTEL_ENABLED      # acepta la API estándar de OpenTelemetry
               value: "true"
           # startupProbe gives the JVM up to 5 min on slow nodes before liveness starts judging it
           startupProbe:

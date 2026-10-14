@@ -33,23 +33,26 @@ Se ponen **en el despliegue**, no en el código. En `k8s/app.yaml`, en el Deploy
       labels:
         tags.datadoghq.com/env: course          # <- env
         tags.datadoghq.com/service: shop-api    # <- service
-        tags.datadoghq.com/version: "1.0.0"     # <- version (¡hoy fija a mano!)
+        tags.datadoghq.com/version: "1.0.5"     # <- version: la cambia el pipeline
 ...
           env:
             - name: DD_SERVICE
-              value: shop-api
+              valueFrom: { fieldRef: { fieldPath: "metadata.labels['tags.datadoghq.com/service']" } }
             - name: DD_ENV
-              value: course
+              valueFrom: { fieldRef: { fieldPath: "metadata.labels['tags.datadoghq.com/env']" } }
             - name: DD_VERSION
-              value: "1.0.0"
+              valueFrom: { fieldRef: { fieldPath: "metadata.labels['tags.datadoghq.com/version']" } }
 ```
 
-- Las **labels** del pod las lee el agente de Datadog para etiquetar las métricas del contenedor y sus logs.
-- Las **variables** `DD_*` las lee el tracer dentro de la app para etiquetar las trazas y los logs.
+- Las **labels** del pod son el **único sitio** donde se escriben los valores. El agente de Datadog
+  las lee para etiquetar las métricas del contenedor y sus logs.
+- Las **variables** `DD_*` no repiten los valores: los **leen de las labels**. Las usa el tracer dentro
+  de la app para etiquetar las trazas y los logs.
 - En la **página web** van en el código JavaScript (ver punto 5).
 
-Mismo valor en los tres sitios = Datadog enlaza todo. Y `version` debería ponerla el pipeline en cada
-despliegue; aquí está escrita a mano y por eso Datadog cree que siempre es la 1.0.0.
+**Un solo sitio, y que lo actualice el pipeline.** Cada dato duplicado es una ocasión de que dos
+fuentes no coincidan, y en observabilidad eso falla en silencio: si la versión está escrita en tres
+sitios y alguien solo cambia uno, Datadog dice una cosa y el clúster otra.
 
 ---
 
@@ -191,8 +194,11 @@ recibirlo (pipelines). Los logs de nginx, en cambio, van en JSON (`nginx/nginx.c
 
 ```yaml
       annotations:
-        ad.datadoghq.com/shop-api.logs: '[{"source":"java","service":"shop-api"}]'
+        ad.datadoghq.com/shop-api.logs: '[{"source":"java"}]'
 ```
+
+(`source: java` le dice qué tipo de log es, para que lo trocee con el pipeline de Java. El `service`
+no hace falta: ya lo pone la label del pod.)
 
 ---
 

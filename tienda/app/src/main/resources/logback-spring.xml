@@ -16,3 +16,9 @@
     </root>
     <logger name="com.course.shop" level="INFO"/>
 </configuration>
+
+
+<!--
+ 2026-10-11 07:57:40.105 INFO  [http-nio-8081-exec-2] [dd.service=shop-api dd.env=course dd.version=1.0.0 dd.trace_id=6acb4173...c691 dd.span_id=5740378446534783345] c.course.shop.service.OrderService - Order created id=10 customer=ivan ... status=PAID
+-->
+
