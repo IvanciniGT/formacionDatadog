@@ -349,3 +349,63 @@ METRICS WITHOUT LIMITS (en cada métrica: botón "Manage Tags"):
     4. Metrics -> Summary -> shop.orders.created: sus etiquetas y su nº de series.
        La pregunta del millón de clientes.
     5. Botón "Manage Tags": el freno de emergencia.
+
+---
+
+# SEÑALES DORADAS (Golden signals)
+
+Las 4 PREGUNTAS MÍNIMAS que tengo que poder contestar de CUALQUIER servicio.
+Vienen del libro de SRE de Google: si solo puedo vigilar 4 cosas... estas.
+
+    Señal        Pregunta                      En la tienda (shop-api)                          Para un PO
+    ----------   ---------------------------   ----------------------------------------------   ------------------------------------------
+    LATENCIA     ¿Cuánto tardan?               p50 / p95 / p99 de POST /api/orders              ¿Cuánto espera un cliente para comprar?
+    TRÁFICO      ¿Cuánta demanda hay?          peticiones/segundo, pedidos/minuto               ¿Cuánta gente lo está usando?
+    ERRORES      ¿Cuántas fallan?              % de peticiones 5xx, % de pagos fallidos         ¿Cuántos intentos de compra salen mal?
+    SATURACIÓN   ¿Cómo de lleno está?          CPU y RAM del pod vs su límite,                  ¿Cuánto margen queda antes de que
+                                               conexiones a Postgres, colas                     todo vaya lento?
+
+Matices (casi todo dado ayer):
+
+    LATENCIA     con PERCENTILES. NUNCA la media (ayer: mediana y p99).
+                 Y la latencia de las peticiones CON ERROR, aparte:
+                 un error rápido "mejora" la media y engaña.
+
+    ERRORES      como TASA, no como número.
+                 100 errores sobre 10.000 peticiones   =  1 %
+                 100 errores sobre    200 peticiones   = 50 %
+                 Es un count / otro count:   errores / peticiones * 100
+
+    TRÁFICO      es el CONTEXTO de las demás.
+                 Latencia alta a las 3 am con 2 peticiones   !=   con 2.000.
+
+    SATURACIÓN   es el AVISO ADELANTADO.
+                 Las otras 3 miden el SÍNTOMA cuando ya pasa.
+                 La saturación avisa de que VA a pasar.
+
+## El ORDEN importa: el orden de mirar en un incidente
+
+    1. ERRORES       ¿Está roto?
+    2. LATENCIA      ¿Va lento?
+    3. TRÁFICO       ¿Hay más demanda de lo normal?... ¿o ninguna?
+    4. SATURACIÓN    ¿Por qué? ¿Nos hemos quedado sin recursos?
+
+    1, 2 y 3  ->  lo que NOTA EL USUARIO  (síntomas)
+    4         ->  la CAUSA probable
+
+Y es el orden de arriba a abajo de un dashboard de guardia.
+
+## Variantes con nombre (les sonarán)
+
+    RED   (Rate, Errors, Duration)              las 3 primeras. Para SERVICIOS que reciben peticiones (shop-api)
+    USE   (Utilization, Saturation, Errors)     para RECURSOS: CPU, disco, red. La 4ª señal desglosada.
+
+## Y esto es la puerta de entrada a los MONITORES
+
+¿Sobre qué pongo alertas?
+    ALERTAR SOBRE SÍNTOMAS, NO SOBRE CAUSAS.
+
+    Despertar a alguien  ->  suben los ERRORES o la LATENCIA. Eso lo sufre el cliente.
+    CPU al 90 % con los clientes contentos  ->  a un dashboard. NO se despierta a nadie.
+
+> La alerta de las 3 am que luego no era nada... casi siempre era una alerta sobre una CAUSA.
