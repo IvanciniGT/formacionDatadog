@@ -741,3 +741,131 @@ y, en vez de empezar una traza nueva, CONTINÚA la del navegador.
 > Para el PO: el SDK de RUM es UNA etiqueta <script> y un init.
     Lo que se pide al equipo de front: que esté en todas las páginas, con service/env/version,
     allowedTracingUrls apuntando a nuestro API, setUser con un id interno (no el email), y la privacidad decidida.
+
+## El código JS completo de la página (tienda/web/index.html), comentado
+
+### En el <head>: cargar y activar RUM
+
+```html
+<!-- Las credenciales: rum-config.js lo genera entrypoint.sh al arrancar el contenedor -->
+<script src="rum-config.js"></script>
+
+<!-- El SDK de RUM de Datadog, descargado de SU web (eu1 = site Europa) -->
+<script src="https://www.datadoghq-browser-agent.com/eu1/v6/datadog-rum.js"></script>
+
+<script>
+  // Solo se activa si el SDK ha cargado y hay credenciales (un bloqueador de anuncios lo impide)
+  if (window.DD_RUM && window.RUM_CONFIG && window.RUM_CONFIG.applicationId) {
+    window.DD_RUM.init({
+      applicationId: RUM_CONFIG.applicationId,          // qué aplicación RUM es
+      clientToken: RUM_CONFIG.clientToken,              // permiso (público) para enviar
+      site: RUM_CONFIG.site || 'datadoghq.eu',
+      service: 'shop-web',                              // ┐
+      env: RUM_CONFIG.env || 'course',                  // │ unified service tagging
+      version: RUM_CONFIG.version || '1.0.0',           // ┘
+      sessionSampleRate: 100,                           // % de sesiones registradas
+      sessionReplaySampleRate: 100,                     // % con replay
+      trackUserInteractions: true,                      // clics
+      trackResources: true,                             // llamadas al API, imágenes, scripts...
+      trackLongTasks: true,                             // bloqueos de la página
+      defaultPrivacyLevel: 'mask-user-input',           // lo escrito, enmascarado
+      // AQUÍ NACE LA TRAZA: en las llamadas a mi propio dominio, crea trace id y mándalo en cabeceras
+      allowedTracingUrls: [ (url) => url.startsWith(window.location.origin) ],
+    });
+  } else {
+    console.warn('RUM not initialised: missing applicationId/clientToken in rum-config.js');
+  }
+</script>
+```
+
+### rum-config.js: lo genera tienda/web/entrypoint.sh al arrancar
+
+```sh
+cat > /usr/share/nginx/html/rum-config.js <<JS
+window.RUM_CONFIG = {
+  applicationId: "${DD_RUM_APP_ID}",       # variables de entorno del contenedor,
+  clientToken: "${DD_RUM_CLIENT_TOKEN}",   # que vienen de un secreto de Kubernetes
+  site: "${DD_SITE:-datadoghq.eu}",
+  env: "${DD_ENV:-course}",
+  version: "${DD_VERSION:-1.0.0}"
+};
+JS
+exec nginx -g 'daemon off;'
+```
+
+### En el <body>: la lógica de la tienda
+
+OJO: aquí NO HAY NADA DE DATADOG en las llamadas al API. Es un fetch() normal.
+El SDK de RUM INTERCEPTA fetch() por debajo: mide la llamada y le añade las cabeceras de traza.
+Lo único "de Datadog" son 2 líneas: el nombre del clic (ddActionName) y el usuario (setUser).
+
+```js
+// Llamada genérica al API: un fetch() normal, sin nada de Datadog
+const api = async (path, opts) => {
+  const t0 = performance.now();
+  const r = await fetch(path, opts);          // <- el SDK la intercepta: crea trace id + cabeceras
+  const ms = Math.round(performance.now() - t0);
+  const body = await r.json().catch(() => ({}));
+  log(`${opts?.method||'GET'} ${path} -> ${r.status} (${ms} ms) ${JSON.stringify(body).slice(0,120)}`, r.ok ? 'ok' : 'err');
+  if (!r.ok) throw new Error(`${path} failed with ${r.status}`);
+  return body;
+};
+
+// Pinta los productos, cada uno con su botón Buy
+async function loadProducts() {
+  const products = await api('/api/products');
+  const grid = document.getElementById('products');
+  grid.innerHTML = '';
+  for (const p of products) {
+    const card = document.createElement('div');
+    card.className = 'card';
+    card.innerHTML = `<strong>${p.name}</strong><br>${p.category}<br>${p.price} € · stock ${p.stock}<br>`;
+    const btn = document.createElement('button');
+    btn.textContent = 'Buy';
+    btn.dataset.ddActionName = `buy ${p.name}`;   // <- DATADOG: nombre legible del clic en RUM ("buy Keyboard")
+    btn.onclick = () => buy(p.id);
+    card.appendChild(btn);
+    grid.appendChild(card);
+  }
+}
+
+// Comprar: POST /api/orders  -> ESTA es la llamada que lleva la traza al backend
+async function buy(productId) {
+  const customer = document.getElementById('customer').value || 'anonymous';
+  try {
+    await api('/api/orders', { method: 'POST', headers: {'Content-Type': 'application/json'},
+                                body: JSON.stringify({ customer, productId, quantity: 1 }) });
+  } catch (e) { /* already logged */ }
+  loadOrders();
+}
+
+// Últimos pedidos
+async function loadOrders() {
+  const orders = await api('/api/orders');
+  document.getElementById('orders').innerHTML = orders.length ? orders.map(o =>
+    `#${o.id} ${o.customer} · ${o.product} x${o.quantity} · ${o.total} € · <b class="${o.status==='PAID'?'ok':'err'}">${o.status}</b>`).join('<br>') : '-';
+}
+
+// Botón "Identify in RUM"
+document.getElementById('identify').onclick = () => {
+  const name = document.getElementById('customer').value;
+  if (window.DD_RUM) { DD_RUM.setUser({ id: name, name }); log(`RUM user set to ${name}`); }   // <- DATADOG: quién es el usuario
+};
+
+// Botones que "rompen cosas" a propósito
+document.getElementById('btn-slow').onclick    = () => api('/api/slow').catch(()=>{});     // petición lenta
+document.getElementById('btn-error').onclick   = () => api('/api/error').catch(()=>{});    // 500 en el backend
+document.getElementById('btn-payment').onclick = () => api('/api/payment').catch(()=>{});  // pago que falla el 30 %
+document.getElementById('btn-report').onclick  = () => api('/api/report').catch(()=>{});   // el N+1 de la base de datos
+// Error de JavaScript: el SDK lo captura SOLO (sin código) -> aparece en RUM y en Error Tracking
+document.getElementById('btn-jserror').onclick = () => { log('throwing a JS error', 'err'); setTimeout(() => { throw new Error('Deliberate front-end error from the demo page'); }, 0); };
+// Bloquea la página 400 ms: el SDK lo registra como "long task"
+document.getElementById('btn-longtask').onclick = () => { const t = Date.now(); while (Date.now() - t < 400) {} log('blocked the main thread for 400 ms'); };
+
+loadProducts().then(loadOrders);
+```
+
+Resumen: lo que hace RUM en esta página
+    Código escrito para Datadog:   DD_RUM.init (con allowedTracingUrls), ddActionName, setUser
+    Lo demás lo hace el SDK SOLO:  sesiones, vistas, clics, cada fetch con su duración y su estado,
+                                   el trace id en las cabeceras, los errores JS, los bloqueos, el replay
