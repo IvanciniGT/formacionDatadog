@@ -197,3 +197,155 @@ Es el ejemplo perfecto de lo que pasa cuando la versión no la pone el pipeline.
     1. Que el pipeline ponga la version real en cada despliegue.
     2. Que el pipeline mande el evento de despliegue.
     3. (Si se paga) conectar los pipelines a Datadog para tener las métricas DORA.
+
+---
+
+# MÉTRICAS EN DATADOG
+
+## Serie temporal
+
+En Datadog una métrica NO es un número suelto. Es una SERIE TEMPORAL:
+    un NOMBRE + una COMBINACIÓN CONCRETA de etiquetas + puntos en el tiempo
+
+    shop.orders.created {status:paid, category:audio}              10:00 -> 3   10:01 -> 5   10:02 -> 2 ...
+    shop.orders.created {status:paid, category:peripherals}        10:00 -> 7   10:01 -> 4 ...
+    shop.orders.created {status:payment_failed, category:audio}    ...
+
+Cada COMBINACIÓN DISTINTA de valores de etiqueta = UNA SERIE.
+Con la tabla de contingencia de ayer: CADA CASILLA DE LA TABLA ES UNA SERIE.
+
+## Cardinalidad = dinero
+
+CARDINALIDAD: número de valores distintos que puede tomar una etiqueta.
+
+    shop.orders.created  lleva:  status   (2 valores: paid, payment_failed)
+                                 category (4 valores)
+                                 -> 2 x 4 = 8 series.  Barato y útil.
+
+Datadog cobra las métricas propias (CUSTOM) POR NÚMERO DE SERIES.
+
+> Pregunta: le añado la etiqueta customer_id. Tenemos 1.000.000 de clientes. ¿Cuántas series?
+    8 x 1.000.000 = 8.000.000 de series.
+    - La factura se dispara.
+    - Y la tabla ya NO CLASIFICA NADA: cada fila es un cliente.
+
+REGLA: en métricas, solo etiquetas con POCOS valores:
+    status, categoría, país, endpoint (sin ids), versión, entorno...
+NUNCA: id de cliente, id de pedido, trace id, email, URLs con ids, fechas, texto libre.
+    Eso va en LOGS y TRAZAS (que se pagan de otra forma).
+    -> Es lo de "etiqueta vs identificador" de esta mañana.
+
+## Tipos de métrica: 2 preguntas
+
+La app NO manda cada dato tal cual a Datadog. Lo RESUME antes de enviarlo.
+El TIPO de métrica = CÓMO SE RESUME. Lo que se tira al resumir NO SE RECUPERA.
+
+Ejemplo: en 10 segundos entran 3 pedidos: 20 €, 50 €, 200 €
+
+    PREGUNTA 1: ¿Mando CADA DATO o lo CONSOLIDO antes?
+
+        Mando cada dato       -> DISTRIBUTION      mando 20, 50, 200
+                                 Datadog puede hacer EL HISTOGRAMA y todos los indicadores:
+                                 mediana, p95, p99, media, máximo, suma (ingresos), recuento (pedidos)
+                                 El más completo. El más caro.
+
+        Consolido             -> COUNT o GAUGE     solo sobrevive el resumen
+
+    PREGUNTA 2: si consolido... ¿el dato es ADITIVO?
+
+        SÍ  -> COUNT    "cuántas veces ha pasado algo en este intervalo"
+                        mando: pedidos = 3
+                        Los pedidos de las 10:00 + los de las 10:01 = los de esos 2 minutos.
+                        Es la FRECUENCIA de la tabla de frecuencias.
+                        No sé de cuánto fueron los pedidos.
+
+        NO  -> GAUGE    "cuánto vale AHORA" (una foto)
+                        mando: stock_teclados = 487   (dentro de 1 minuto: 486)
+                        CPU, memoria, conexiones abiertas, tamaño de una cola, temperatura...
+                        El stock de las 10:00 + el de las 10:01 = NADA.
+
+    Lo que pasó:       20 €   50 €   200 €
+
+    count         ->   "3"                    solo cuántos
+    gauge         ->   "200" (el último)      solo una foto
+    distribution  ->   20, 50, 200            todo: histograma y percentiles
+
+OJO con la aditividad del gauge: depende de EN QUÉ DIRECCIÓN sumo.
+    - En el TIEMPO: un gauge NUNCA se suma.
+    - Entre SERIES, en el MISMO instante: A VECES SÍ.
+        Memoria de los 3 pods de shop-api a las 10:00 -> se suman = memoria total del servicio.   (bytes: RAZÓN)
+        % de CPU de 3 máquinas: 90 + 80 + 70 = 240 % ... de NADA. Media o máximo.             (porcentaje)
+    -> Es lo de ayer de RAZÓN vs INTERVALO, aplicado aquí.
+
+EL TIPO LO DECIDE QUIEN ENVÍA EL DATO (desarrollo, o la integración del agente).
+
+> Pregunta de PO: mañana quiero el p95 del tiempo de respuesta, o el ticket medio.
+    El equipo tiene que mandar ESE DATO COMO DISTRIBUTION DESDE HOY.
+    Si lo mandan como count... ese análisis NO EXISTIRÁ NUNCA.
+    "Los cuadros de mando condicionan los datos que hay que capturar en origen."
+
+## Las operaciones SÍ las elijo yo (en cada gráfica)
+
+    El TIPO es lo que se manda: no lo cambio en la gráfica.
+    La OPERACIÓN la elijo yo en cada consulta. El tipo solo decide:
+        - el valor POR DEFECTO que me propone el editor (¡no siempre el que tiene sentido!)
+        - QUÉ operaciones existen (percentiles: solo si es distribution)
+
+En cada consulta hay DOS operaciones:
+
+    1. Entre SERIES (desplegable a la izquierda de la métrica: avg / sum / min / max)
+       Cómo combino las series que cumplen el filtro.
+           sum:shop.orders.created{*}                  -> todos los pedidos juntos
+           sum:shop.orders.created{*} by {status}      -> sumo, pero uno por estado
+                                                          = TABLA DE FRECUENCIAS en el tiempo
+
+    2. En el TIEMPO (rollup: avg / sum / min / max / count)
+       Una gráfica de 1 día no puede pintar un punto cada 15 segundos.
+       Agrupa los puntos en intervalos de varios minutos. ¿Cómo? Lo elijo yo.
+           .rollup(sum, 300)    -> suma por intervalos de 5 minutos
+
+    Para los contadores además:
+           .as_count()   -> total por intervalo
+           .as_rate()    -> por segundo
+
+    Y encima: fórmulas (a / b * 100), timeshift (comparar con ayer), percentiles, anomalías...
+
+Un COUNT se suma en las dos direcciones.
+Un GAUGE se suma como mucho entre series, y solo si la magnitud lo permite (bytes sí, % no).
+
+## El error de todo el mundo: un contador con avg
+
+Metrics -> Explorer -> shop.orders.created
+El editor pone avg por defecto -> una línea casi plana en 0,3.
+    "¿No vendemos?"
+Está PROMEDIANDO RECUENTOS: intervalos con 1 pedido, con 0... da 0,3. No significa nada.
+    sum + .as_count()          -> los pedidos reales por intervalo
+    ... by {status}            -> la tabla de frecuencias de ayer, en el tiempo
+
+LA OPERACIÓN DEPENDE DEL TIPO DE DATO. (Los hijos y la temperatura de ayer.)
+
+## Metrics Summary y Metrics without Limits
+
+METRICS SUMMARY (Metrics -> Summary): el INVENTARIO de todas las métricas.
+    De cada una: tipo, unidad, descripción, qué etiquetas lleva, quién la manda
+    y CUÁNTAS SERIES TIENE  -> LA FACTURA ANTES DE QUE LLEGUE.
+    Si una métrica tiene 200.000 series... alguien ha metido un id.
+    Aquí también se corrigen unidad, descripción y tipo (si alguien lo declaró mal;
+    eso no recupera lo que no se mandó).
+
+METRICS WITHOUT LIMITS (en cada métrica: botón "Manage Tags"):
+    Elijo QUÉ ETIQUETAS SE CONSERVAN. Las demás se descartan al llegar.
+    Pago solo por las que conservo.
+    Alguien despliega a las 3 am una métrica con customer_id:
+        -> se arregla aquí en 1 minuto, SIN TOCAR CÓDIGO, mientras el equipo corrige la app.
+    EL FRENO DE EMERGENCIA DE LA FACTURA.
+
+## En pantalla (30 min)
+
+    1. Metrics -> Explorer: shop.orders.created tal cual -> línea plana. "¿No vendemos?"
+       Cambiar a sum + .as_count() -> aparecen los pedidos.
+    2. Añadir  by {status}  -> "vuestra tabla de frecuencias de ayer, en el tiempo".
+    3. shop.orders.value (distribution): p50, p95, sum (ingresos), count (pedidos). Un dato, todo.
+    4. Metrics -> Summary -> shop.orders.created: sus etiquetas y su nº de series.
+       La pregunta del millón de clientes.
+    5. Botón "Manage Tags": el freno de emergencia.
