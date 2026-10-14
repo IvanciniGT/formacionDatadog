@@ -1,0 +1,464 @@
+# Reference manifests for the demo app on Kubernetes. Namespace datadog-curso.
+# The deployment playbook may template these; the values that matter are marked.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: datadog-curso
+---
+# ----------------------------------------------------------------------------- Postgres
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-init
+  namespace: datadog-curso
+data:
+  init.sql: |
+    -- Runs on first start of the postgres container (docker-entrypoint-initdb.d) and again on every
+    -- Kubernetes deploy (Job shop-db-init), so everything here must be idempotent.
+
+    -- 1) Application schema and data ------------------------------------------------
+    CREATE TABLE IF NOT EXISTS products (
+        id        BIGSERIAL PRIMARY KEY,
+        name      VARCHAR(100) NOT NULL,
+        category  VARCHAR(50)  NOT NULL,
+        price     NUMERIC(10,2) NOT NULL,
+        stock     INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS orders (
+        id         BIGSERIAL PRIMARY KEY,
+        customer   VARCHAR(100) NOT NULL,
+        product_id BIGINT NOT NULL REFERENCES products(id),
+        quantity   INTEGER NOT NULL,
+        total      NUMERIC(10,2) NOT NULL,
+        status     VARCHAR(20) NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    -- No index on product_id on purpose: the N+1 report gets slower as orders grow,
+    -- and "add the index" is part of the DBM exercise.
+
+    INSERT INTO products (name, category, price, stock)
+    SELECT * FROM (VALUES
+     ('Keyboard',        'peripherals', 49.90, 500),
+     ('Mouse',           'peripherals', 19.90, 800),
+     ('Monitor 27"',     'displays',   249.00, 120),
+     ('USB-C hub',       'peripherals', 34.50, 300),
+     ('Laptop stand',    'furniture',   59.00, 200),
+     ('Desk lamp',       'furniture',   29.00, 250),
+     ('Webcam',          'peripherals', 79.00, 150),
+     ('Headset',         'audio',       99.00, 180),
+     ('Speakers',        'audio',      129.00,  90),
+     ('Ultrawide 34"',   'displays',   499.00,  40)) AS seed(name, category, price, stock)
+    WHERE NOT EXISTS (SELECT 1 FROM products);
+
+    -- 2) Datadog user for Database Monitoring (DBM) ----------------------------------
+    -- https://docs.datadoghq.com/database_monitoring/setup_postgres/selfhosted/
+    DO $$ BEGIN
+      IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datadog') THEN
+        CREATE ROLE datadog LOGIN PASSWORD 'datadog';
+      END IF;
+    END $$;
+    ALTER ROLE datadog INHERIT;
+    GRANT pg_monitor TO datadog;
+    GRANT SELECT ON pg_stat_database TO datadog;
+
+    CREATE SCHEMA IF NOT EXISTS datadog;
+    GRANT USAGE ON SCHEMA datadog TO datadog;
+    GRANT USAGE ON SCHEMA public TO datadog;
+
+    -- explain plans: the agent calls datadog.explain_statement(<query>) as the datadog user
+    CREATE OR REPLACE FUNCTION datadog.explain_statement(
+       l_query TEXT,
+       OUT explain JSON
+    )
+    RETURNS SETOF JSON AS
+    $$
+    DECLARE
+    curs REFCURSOR;
+    plan JSON;
+
+    BEGIN
+       OPEN curs FOR EXECUTE pg_catalog.concat('EXPLAIN (FORMAT JSON) ', l_query);
+       FETCH curs INTO plan;
+       CLOSE curs;
+       RETURN QUERY SELECT plan;
+    END;
+    $$
+    LANGUAGE 'plpgsql'
+    RETURNS NULL ON NULL INPUT
+    SECURITY DEFINER;
+
+    -- pg_stat_statements is loaded by the -c shared_preload_libraries flag in docker-compose
+    CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
+# --- end postgres-init ---
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-data
+  namespace: datadog-curso
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: primary-nfs-class
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: datadog-curso
+  labels: { app: postgres }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app: postgres }
+  template:
+    metadata:
+      labels:
+        app: postgres
+        tags.datadoghq.com/env: course
+        tags.datadoghq.com/service: shop-db
+        tags.datadoghq.com/version: "16"
+      annotations:
+        ad.datadoghq.com/postgres.logs: '[{"source":"postgresql","service":"shop-db"}]'
+        # DBM check as a CLUSTER check (runs once on the cluster-checks runner, through the Service below)
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16
+          args: ["-c", "shared_preload_libraries=pg_stat_statements", "-c", "track_io_timing=on", "-c", "pg_stat_statements.track=all"]
+          env:
+            - name: POSTGRES_DB
+              value: shop
+            - name: POSTGRES_USER
+              value: shop
+            - name: POSTGRES_PASSWORD
+              valueFrom: { secretKeyRef: { name: postgres-credentials, key: password } }   # created by the playbook
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          ports:
+            - containerPort: 5432
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            - name: init
+              mountPath: /docker-entrypoint-initdb.d
+          readinessProbe:
+            exec: { command: ["pg_isready", "-U", "shop", "-d", "shop"] }
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 50m, memory: 256Mi }
+            limits:   { cpu: 500m, memory: 512Mi }
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: postgres-data }
+        - name: init
+          configMap: { name: postgres-init }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: datadog-curso
+  labels: { app: postgres }
+  annotations:
+    # Cluster check: the DBM integration against the Service, executed by the cluster-checks runner.
+    # The datadog user password comes from init.sql ('datadog'); change both if you change one.
+    ad.datadoghq.com/service.checks: |
+      {
+        "postgres": {
+          "init_config": {},
+          "instances": [{
+            "host": "%%host%%",
+            "port": 5432,
+            "username": "datadog",
+            "password": "datadog",
+            "dbname": "shop",
+            "dbm": true,
+            "collect_activity_metrics": true,
+            "tags": ["env:course", "service:shop-db"]
+          }]
+        }
+      }
+spec:
+  type: ClusterIP            # decision for Ivan: not exposed outside (see ESPECIFICACION.md)
+  selector: { app: postgres }
+  ports:
+    - port: 5432
+      targetPort: 5432
+---
+# Re-applies the (idempotent) init.sql on every deploy. docker-entrypoint-initdb.d only runs on an
+# empty volume, and the PVC outlives deploys. ttlSecondsAfterFinished removes the Job so the next
+# apply does not hit the immutable spec of a finished Job.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: shop-db-init
+  namespace: datadog-curso
+spec:
+  ttlSecondsAfterFinished: 120
+  backoffLimit: 6
+  template:
+    metadata:
+      labels:
+        app: shop-db-init
+        admission.datadoghq.com/enabled: "false"
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: psql
+          image: postgres:16
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              until pg_isready -h postgres -U shop -d shop; do echo waiting for postgres; sleep 3; done
+              psql -v ON_ERROR_STOP=1 -h postgres -U shop -d shop -f /init/init.sql
+          env:
+            - name: PGPASSWORD
+              valueFrom: { secretKeyRef: { name: postgres-credentials, key: password } }
+          volumeMounts:
+            - name: init
+              mountPath: /init
+          resources:
+            requests: { cpu: 20m, memory: 32Mi }
+            limits:   { cpu: 200m, memory: 128Mi }
+      volumes:
+        - name: init
+          configMap: { name: postgres-init }
+---
+# ----------------------------------------------------------------------------- shop-api
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shop-api
+  namespace: datadog-curso
+  labels: { app: shop-api }
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: shop-api }
+  template:
+    metadata:
+      labels:
+        app: shop-api
+        tags.datadoghq.com/env: course          # unified service tagging: the admission controller
+        tags.datadoghq.com/service: shop-api    # turns these into DD_ENV/DD_SERVICE/DD_VERSION
+        tags.datadoghq.com/version: "1.0.0"     # <- bump on every deploy (same as the image tag)
+        admission.datadoghq.com/enabled: "true"
+      annotations:
+        ad.datadoghq.com/shop-api.logs: '[{"source":"java","service":"shop-api"}]'
+        # The image already carries dd-java-agent, so no library injection is needed; the admission
+        # controller still injects the DD_* env vars and the agent socket. To use Single Step Instrumentation
+        # instead, remove -javaagent from the Dockerfile and keep the label above.
+    spec:
+      containers:
+        - name: shop-api
+          image: registry.ivanosuna.com/curso/shop-api:1.0.0      # <- Harbor, project curso
+          ports:
+            - containerPort: 8081
+          env:
+            - name: DB_HOST
+              value: postgres
+            - name: DB_NAME
+              value: shop
+            - name: DB_USER
+              value: shop
+            - name: DB_PASSWORD
+              valueFrom: { secretKeyRef: { name: postgres-credentials, key: password } }
+            - name: DD_SERVICE
+              value: shop-api
+            - name: DD_ENV
+              value: course
+            - name: DD_VERSION
+              value: "1.0.0"                                            # <- bump with the version label
+            - name: DD_AGENT_HOST
+              valueFrom: { fieldRef: { fieldPath: status.hostIP } }   # the node's agent (hostPort 8126/8125)
+            - name: DD_LOGS_INJECTION
+              value: "true"
+            - name: DD_TRACE_SAMPLE_RATE
+              value: "1"
+            - name: DD_PROFILING_ENABLED
+              value: "true"
+            - name: DD_DBM_PROPAGATION_MODE
+              value: full
+            - name: DD_TRACE_OTEL_ENABLED
+              value: "true"
+          # startupProbe gives the JVM up to 5 min on slow nodes before liveness starts judging it
+          startupProbe:
+            httpGet: { path: /actuator/health/liveness, port: 8081 }
+            periodSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            httpGet: { path: /actuator/health/readiness, port: 8081 }
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /actuator/health/liveness, port: 8081 }
+            periodSeconds: 10
+            failureThreshold: 3
+          # Low requests on purpose: the cluster's workers are CPU-committed; limits stay generous.
+          resources:
+            requests: { cpu: 100m, memory: 384Mi }
+            limits:   { cpu: "1",  memory: 768Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: shop-api
+  namespace: datadog-curso
+spec:
+  selector: { app: shop-api }
+  ports:
+    - port: 8081
+      targetPort: 8081
+---
+# ----------------------------------------------------------------------------- shop-web (nginx + RUM)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shop-web
+  namespace: datadog-curso
+  labels: { app: shop-web }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: shop-web }
+  template:
+    metadata:
+      labels:
+        app: shop-web
+        tags.datadoghq.com/env: course
+        tags.datadoghq.com/service: shop-web
+        tags.datadoghq.com/version: "1.0.0"
+      annotations:
+        ad.datadoghq.com/shop-web.logs: '[{"source":"nginx","service":"shop-web"}]'
+    spec:
+      containers:
+        - name: shop-web
+          image: registry.ivanosuna.com/curso/shop-web:1.0.0
+          ports:
+            - containerPort: 80
+          env:
+            - name: DD_SITE
+              value: datadoghq.eu
+            - name: DD_ENV
+              value: course
+            - name: DD_VERSION
+              value: "1.0.0"
+            - name: DD_RUM_APP_ID
+              valueFrom: { secretKeyRef: { name: rum-credentials, key: app-id } }         # created by the playbook
+            - name: DD_RUM_CLIENT_TOKEN
+              valueFrom: { secretKeyRef: { name: rum-credentials, key: client-token } }
+          readinessProbe:
+            httpGet: { path: /rum-config.js, port: 80 }
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits:   { cpu: 200m, memory: 128Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: shop-web
+  namespace: datadog-curso
+spec:
+  selector: { app: shop-web }
+  ports:
+    - port: 80
+      targetPort: 80
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: shop-web
+  namespace: datadog-curso
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+spec:
+  ingressClassName: ingress-public
+  tls:
+    - hosts: [datadog.ivanosuna.com]
+      secretName: shop-web-tls
+  rules:
+    - host: datadog.ivanosuna.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: shop-web
+                port: { number: 80 }
+---
+# ----------------------------------------------------------------------------- load generator
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: load-script
+  namespace: datadog-curso
+data:
+  generate.sh: |
+    #!/bin/sh
+    # Traffic generator. Mix of good, slow and failing requests so that every
+    # screen in Datadog has something to show. Runs forever.
+    BASE="${TARGET:-http://nginx}"
+    NAMES="ana luis marta pedro sofia hugo lucia"
+    hit() { curl -s -o /dev/null -w "%{http_code} %{time_total}s $1\n" "$@"; }
+    while true; do
+      n=$(( $(date +%s) % 7 + 1 )); customer=$(echo $NAMES | cut -d' ' -f$n)
+      product=$(( $(od -An -N1 -tu1 /dev/urandom) % 10 + 1 ))
+      r=$(( $(od -An -N1 -tu1 /dev/urandom) % 100 ))
+      hit "$BASE/api/products"
+      hit "$BASE/api/products/$product"
+      if   [ $r -lt 50 ]; then hit "$BASE/api/orders" -X POST -H 'Content-Type: application/json' -d "{\"customer\":\"$customer\",\"productId\":$product,\"quantity\":1}"
+      elif [ $r -lt 65 ]; then hit "$BASE/api/orders"
+      elif [ $r -lt 80 ]; then hit "$BASE/api/slow"
+      elif [ $r -lt 88 ]; then hit "$BASE/api/payment"
+      elif [ $r -lt 94 ]; then hit "$BASE/api/report"
+      elif [ $r -lt 98 ]; then hit "$BASE/api/error"
+      else                     hit "$BASE/api/products/999"
+      fi
+      hit "$BASE/"
+      sleep "${PAUSE:-2}"
+    done
+# --- end load-script ---
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: load
+  namespace: datadog-curso
+  labels: { app: load }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: load }
+  template:
+    metadata:
+      labels:
+        app: load
+        tags.datadoghq.com/env: course
+        tags.datadoghq.com/service: load
+      annotations:
+        checksum/generate-script: 22f0a1bf5483d1e4   # set by k8s/render.py: a script change rolls the pod
+    spec:
+      containers:
+        - name: load
+          image: curlimages/curl:8.10.1
+          command: ["/bin/sh", "/scripts/generate.sh"]
+          env:
+            - name: TARGET
+              value: http://shop-web
+            - name: PAUSE
+              value: "2"
+          volumeMounts:
+            - name: script
+              mountPath: /scripts
+          resources:
+            requests: { cpu: 20m, memory: 32Mi }
+            limits:   { cpu: 100m, memory: 64Mi }
+      volumes:
+        - name: script
+          configMap: { name: load-script }

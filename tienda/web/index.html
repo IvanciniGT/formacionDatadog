@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Shop demo</title>
+  <style>
+    :root { --bg:#f6f7fb; --fg:#1d2433; --card:#fff; --accent:#632ca6; --err:#c0392b; --ok:#27ae60; }
+    body { font-family: system-ui, sans-serif; background: var(--bg); color: var(--fg); margin: 0; padding: 16px; }
+    h1 { font-size: 1.4rem; } h2 { font-size: 1.1rem; margin-top: 24px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
+    .card { background: var(--card); border-radius: 8px; padding: 12px; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+    button { background: var(--accent); color: #fff; border: 0; border-radius: 6px; padding: 8px 12px; cursor: pointer; }
+    button.secondary { background: #556; }
+    #log { font-family: ui-monospace, monospace; font-size: .85rem; white-space: pre-wrap; background: #111; color: #ddd; padding: 12px; border-radius: 8px; min-height: 120px; }
+    .err { color: var(--err); } .ok { color: var(--ok); }
+  </style>
+  <!-- RUM SDK: config comes from rum-config.js, generated at container start -->
+  <script src="rum-config.js"></script>
+  <script src="https://www.datadoghq-browser-agent.com/eu1/v6/datadog-rum.js"></script>
+  <script>
+    if (window.DD_RUM && window.RUM_CONFIG && window.RUM_CONFIG.applicationId) {
+      window.DD_RUM.init({
+        applicationId: RUM_CONFIG.applicationId,
+        clientToken: RUM_CONFIG.clientToken,
+        site: RUM_CONFIG.site || 'datadoghq.eu',
+        service: 'shop-web',
+        env: RUM_CONFIG.env || 'course',
+        version: RUM_CONFIG.version || '1.0.0',
+        sessionSampleRate: 100,
+        sessionReplaySampleRate: 100,
+        trackUserInteractions: true,
+        trackResources: true,
+        trackLongTasks: true,
+        defaultPrivacyLevel: 'mask-user-input',
+        // Inject trace headers in fetch() to our own API -> RUM <-> APM correlation
+        allowedTracingUrls: [ (url) => url.startsWith(window.location.origin) ],
+      });
+    } else {
+      console.warn('RUM not initialised: missing applicationId/clientToken in rum-config.js');
+    }
+  </script>
+</head>
+<body>
+  <h1>Shop demo <small>(Datadog course)</small></h1>
+  <p>Every click here is a RUM action; every fetch is a resource with a trace id that you can follow into APM.</p>
+
+  <div class="card">
+    <label>Your name: <input id="customer" value="student"></label>
+    <button id="identify" class="secondary">Identify in RUM</button>
+  </div>
+
+  <h2>Products</h2>
+  <div id="products" class="grid"></div>
+
+  <h2>Demo buttons (things that go wrong on purpose)</h2>
+  <div class="card">
+    <button id="btn-slow">Slow request</button>
+    <button id="btn-error">Server error (500)</button>
+    <button id="btn-payment">Flaky payment</button>
+    <button id="btn-report">N+1 report</button>
+    <button id="btn-jserror" class="secondary">Throw a JS error</button>
+    <button id="btn-longtask" class="secondary">Block the main thread</button>
+  </div>
+
+  <h2>Last orders</h2>
+  <div id="orders" class="card">-</div>
+
+  <h2>Console</h2>
+  <div id="log"></div>
+
+  <script>
+    const log = (msg, cls) => {
+      const el = document.getElementById('log');
+      el.innerHTML = `<span class="${cls||''}">${new Date().toISOString().slice(11,19)} ${msg}</span>\n` + el.innerHTML;
+    };
+    const api = async (path, opts) => {
+      const t0 = performance.now();
+      const r = await fetch(path, opts);
+      const ms = Math.round(performance.now() - t0);
+      const body = await r.json().catch(() => ({}));
+      log(`${opts?.method||'GET'} ${path} -> ${r.status} (${ms} ms) ${JSON.stringify(body).slice(0,120)}`, r.ok ? 'ok' : 'err');
+      if (!r.ok) throw new Error(`${path} failed with ${r.status}`);
+      return body;
+    };
+
+    async function loadProducts() {
+      const products = await api('/api/products');
+      const grid = document.getElementById('products');
+      grid.innerHTML = '';
+      for (const p of products) {
+        const card = document.createElement('div');
+        card.className = 'card';
+        card.innerHTML = `<strong>${p.name}</strong><br>${p.category}<br>${p.price} € · stock ${p.stock}<br>`;
+        const btn = document.createElement('button');
+        btn.textContent = 'Buy';
+        btn.dataset.ddActionName = `buy ${p.name}`;   // readable action name in RUM
+        btn.onclick = () => buy(p.id);
+        card.appendChild(btn);
+        grid.appendChild(card);
+      }
+    }
+    async function buy(productId) {
+      const customer = document.getElementById('customer').value || 'anonymous';
+      try {
+        await api('/api/orders', { method: 'POST', headers: {'Content-Type': 'application/json'},
+                                    body: JSON.stringify({ customer, productId, quantity: 1 }) });
+      } catch (e) { /* already logged */ }
+      loadOrders();
+    }
+    async function loadOrders() {
+      const orders = await api('/api/orders');
+      document.getElementById('orders').innerHTML = orders.length ? orders.map(o =>
+        `#${o.id} ${o.customer} · ${o.product} x${o.quantity} · ${o.total} € · <b class="${o.status==='PAID'?'ok':'err'}">${o.status}</b>`).join('<br>') : '-';
+    }
+
+    document.getElementById('identify').onclick = () => {
+      const name = document.getElementById('customer').value;
+      if (window.DD_RUM) { DD_RUM.setUser({ id: name, name }); log(`RUM user set to ${name}`); }
+    };
+    document.getElementById('btn-slow').onclick = () => api('/api/slow').catch(()=>{});
+    document.getElementById('btn-error').onclick = () => api('/api/error').catch(()=>{});
+    document.getElementById('btn-payment').onclick = () => api('/api/payment').catch(()=>{});
+    document.getElementById('btn-report').onclick = () => api('/api/report').catch(()=>{});
+    document.getElementById('btn-jserror').onclick = () => { log('throwing a JS error', 'err'); setTimeout(() => { throw new Error('Deliberate front-end error from the demo page'); }, 0); };
+    document.getElementById('btn-longtask').onclick = () => { const t = Date.now(); while (Date.now() - t < 400) {} log('blocked the main thread for 400 ms'); };
+
+    loadProducts().then(loadOrders);
+  </script>
+</body>
+</html>

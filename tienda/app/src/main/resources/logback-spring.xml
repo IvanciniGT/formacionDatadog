@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+    <!--
+      Plain text on purpose. dd.trace_id / dd.span_id / dd.service / dd.env /
+      dd.version are put in the MDC by dd-java-agent when DD_LOGS_INJECTION=true.
+      In class, the log pipeline lab parses this format with a grok rule and
+      then we compare it with the JSON alternative (logstash-logback-encoder).
+    -->
+    <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%thread] [dd.service=%X{dd.service} dd.env=%X{dd.env} dd.version=%X{dd.version} dd.trace_id=%X{dd.trace_id} dd.span_id=%X{dd.span_id}] %logger{36} - %msg%n</pattern>
+        </encoder>
+    </appender>
+    <root level="INFO">
+        <appender-ref ref="STDOUT"/>
+    </root>
+    <logger name="com.course.shop" level="INFO"/>
+</configuration>

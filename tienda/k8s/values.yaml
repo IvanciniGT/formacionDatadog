@@ -1,0 +1,148 @@
+# Helm values for the official chart: helm repo add datadog https://helm.datadoghq.com
+# helm upgrade --install datadog datadog/datadog -n datadog-curso -f values.yaml \
+#   --set datadog.apiKeyExistingSecret=datadog-keys --set datadog.appKeyExistingSecret=datadog-keys
+# Chart version: see k8s/datadog-chart-version (3.253.2; the playbook reads it). Agent 7.
+# The playbook forces datadog.operator.enabled=false on top of these values (the chart enables the
+# Operator by default and that would install cluster-wide CRDs); setting it here has no effect.
+#
+# The API/APP keys are NOT here: they come from a Secret named datadog-keys with keys api-key and app-key,
+# created by the deployment playbook from ansible-vault.
+
+targetSystem: linux
+
+datadog:
+  site: datadoghq.eu
+  clusterName: ivanosuna-cluster          # shows as kube_cluster_name on everything
+  criSocketPath: /var/run/crio/crio.sock  # the cluster runs cri-o, not containerd
+  tags:
+    - env:course
+    - team:training
+    - course:datadog
+  env:
+    - name: DD_ENV
+      value: course
+
+  kubelet:
+    tlsVerify: false                       # self-signed kubelet certs on this cluster
+
+  # --- Tags from pod labels (unified service tagging comes from tags.datadoghq.com/* automatically) ---
+  podLabelsAsTags:
+    app: kube_app
+  nodeLabelsAsTags:
+    kubernetes.io/hostname: node_name
+
+  # --- APM ---
+  apm:
+    portEnabled: true                      # TCP 8126 on the host (apps use DD_AGENT_HOST = status.hostIP)
+    socketEnabled: true                    # also the Unix socket, mounted by the admission controller
+    instrumentation:
+      enabled: true                        # Single Step Instrumentation: the admission controller injects the tracer
+      enabledNamespaces:
+        - datadog-curso
+      libVersions:
+        java: "1"                          # major 1.x of dd-java-agent
+
+  # --- DogStatsD ---
+  dogstatsd:
+    port: 8125
+    useHostPort: true                      # UDP 8125 on the node IP (lab03 from outside needs a NodePort/LoadBalancer on top)
+    nonLocalTraffic: true
+
+  # --- Logs ---
+  logs:
+    enabled: true
+    containerCollectAll: true
+    # SCOPE (decision for Ivan): collect only the course namespace. Remove the next line to collect everything.
+    containerCollectUsingFiles: true
+  containerInclude: "kube_namespace:datadog-curso"
+  containerExclude: "kube_namespace:kube-system"
+  # the agent's own containers are in the namespace too: keep their logs out (noise in lab07).
+  # By container name: with cri-o the image: filter did not match.
+  containerExcludeLogs: "name:^agent$ name:^trace-agent$ name:^process-agent$ name:^system-probe$ name:^cluster-agent$"
+  # Note: containerInclude/Exclude apply to logs, metrics (container-level) and autodiscovery of the
+  # NODE agent. kube-state-metrics (cluster-level) still sees all namespaces, which is what we want
+  # for the infrastructure module. If Ivan prefers "everything", delete the two lines above.
+
+  # --- Processes ---
+  processAgent:
+    processCollection: true
+
+  # --- Network (NPM) and Universal Service Monitoring (eBPF) ---
+  networkMonitoring:
+    enabled: true
+  serviceMonitoring:
+    enabled: true
+    # TLS/HTTPS decoding needs uprobes; nginx and the Java app talk plain HTTP inside the cluster, so it works without.
+
+  # --- Orchestrator explorer (pods/deployments as YAML in the UI) ---
+  orchestratorExplorer:
+    enabled: true
+
+  # --- Kubernetes events as Datadog events ---
+  collectEvents: true
+
+  # --- Cluster checks: the Postgres DBM check runs once, not on every node ---
+  clusterChecks:
+    enabled: true
+
+  # --- Remote configuration (Dynamic Instrumentation, Fleet Automation) ---
+  remoteConfiguration:
+    enabled: true
+
+# Node agent: run on every node, control-plane included, with explicit resources
+# (worker4/worker5 are over-committed on limits; keep these honest).
+agents:
+  # worker4 has 99 % of its CPU already requested by other workloads: nothing fits there.
+  # Remove this affinity when Ivan frees CPU on worker4 (the node is then monitored too).
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
+              - key: kubernetes.io/hostname
+                operator: NotIn
+                values: [worker4]
+  tolerations:
+    - key: node-role.kubernetes.io/control-plane
+      operator: Exists
+      effect: NoSchedule
+  containers:
+    agent:
+      resources:
+        requests: { cpu: 100m, memory: 256Mi }
+        limits:   { cpu: 500m, memory: 512Mi }
+    processAgent:
+      resources:
+        requests: { cpu: 50m, memory: 128Mi }
+        limits:   { cpu: 300m, memory: 256Mi }
+    traceAgent:
+      resources:
+        requests: { cpu: 50m, memory: 128Mi }
+        limits:   { cpu: 300m, memory: 256Mi }
+    systemProbe:
+      # NPM + USM: it was OOMKilled at 512Mi on the first deploy
+      resources:
+        requests: { cpu: 100m, memory: 384Mi }
+        limits:   { cpu: "1",  memory: 1Gi }
+
+clusterAgent:
+  enabled: true
+  replicas: 1
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits:   { cpu: 500m, memory: 512Mi }
+  admissionController:
+    enabled: true
+    mutateUnlabelled: false                # only pods with admission.datadoghq.com/enabled: "true"
+  metricsProvider:
+    enabled: false                         # no HPA on Datadog metrics in the course
+
+# Cluster checks runner: where the Postgres DBM cluster check executes
+clusterChecksRunner:
+  enabled: true
+  replicas: 1
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits:   { cpu: 300m, memory: 256Mi }
+
+# kube-state-metrics v2 is bundled by the chart (datadog.kubeStateMetricsCore.enabled defaults to true).
