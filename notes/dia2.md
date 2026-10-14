@@ -646,3 +646,98 @@ Nuestra tienda NO sigue el catálogo (a propósito, para el lab de parseo):
     -> alguien tiene que escribir stock.insufficient con product y requested.
     Si NO ESTÁ EN EL CATÁLOGO... ESE DATO NO EXISTIRÁ.
     (Y lo que no está en el catálogo, o es DEBUG, no se envía: AHORRA DINERO.)
+
+---
+
+# RUM: el JavaScript que activa RUM y CREA LA TRAZA
+
+Fichero: tienda/web/index.html   (lo ejecuta EL NAVEGADOR del usuario, no nuestros servidores)
+
+## 1. Cargar el SDK y sus credenciales
+
+    <script src="rum-config.js"></script>
+    <script src="https://www.datadoghq-browser-agent.com/eu1/v6/datadog-rum.js"></script>
+
+    - datadog-rum.js : el SDK de RUM de Datadog. Se descarga de SU web (eu1 = site Europa).
+    - rum-config.js  : las credenciales (applicationId, clientToken). NO están en el HTML:
+                       las genera tienda/web/entrypoint.sh al arrancar el contenedor, a partir de variables
+                       de entorno (que vienen de un secreto). Misma imagen para todos los entornos.
+                       El clientToken es PÚBLICO: solo sirve para ESCRIBIR sesiones, nunca para leer.
+
+## 2. Activarlo: DD_RUM.init
+
+    window.DD_RUM.init({
+      applicationId: RUM_CONFIG.applicationId,      // QUÉ aplicación RUM es (shop-web)
+      clientToken:   RUM_CONFIG.clientToken,        // permiso para enviar
+      site: 'datadoghq.eu',                         // a qué Datadog (Europa)
+
+      service: 'shop-web',                          // ┐
+      env:     'course',                            // │ UNIFIED SERVICE TAGGING... también aquí
+      version: '1.0.0',                             // ┘
+
+      sessionSampleRate: 100,                       // % de sesiones que se registran (en prod: 10-20)
+      sessionReplaySampleRate: 100,                 // % de sesiones con "vídeo" (replay)
+      trackUserInteractions: true,                  // registrar los CLICS
+      trackResources: true,                         // registrar cada llamada al API, imagen, script...
+      trackLongTasks: true,                         // cuándo se bloquea la página (> 50 ms)
+      defaultPrivacyLevel: 'mask-user-input',       // lo que se ESCRIBE sale enmascarado (privacidad)
+
+      allowedTracingUrls: [ (url) => url.startsWith(window.location.origin) ],   // <-- LA TRAZA
+    });
+
+## 3. Dónde NACE la traza: allowedTracingUrls
+
+Esa línea dice: "en las llamadas que la página haga a MI PROPIO DOMINIO, crea una traza".
+
+Cuando el usuario pulsa "Buy", la página hace:
+
+    fetch('/api/orders', { method: 'POST', ... })
+
+y el SDK, ANTES de que salga la petición:
+    1. genera un TRACE ID (nuevo) y un SPAN ID (el "paso" del navegador)
+    2. los mete en CABECERAS HTTP de esa petición:
+
+        x-datadog-trace-id:  4458021933014412345      (formato Datadog)
+        x-datadog-parent-id: 1188712331921033467
+        x-datadog-origin:    rum
+        traceparent:         00-...-...-01           (formato estándar W3C: lo entienden otras herramientas)
+
+    3. guarda ese trace id en el evento RUM de esa llamada (el "resource" POST /api/orders)
+
+La petición llega a nginx -> la reenvía tal cual a shop-api -> el AGENTE DE JAVA lee las cabeceras
+y, en vez de empezar una traza nueva, CONTINÚA la del navegador.
+
+    NAVEGADOR (RUM)        crea el trace id ──cabeceras──> nginx ──> shop-api (tracer)
+                                                                         │ mismo trace id
+                                                                         ├─ span: SQL
+                                                                         ├─ span: payment.charge
+                                                                         └─ logs con dd.trace_id
+
+-> En Datadog, desde la sesión del usuario: clic en "POST /api/orders" -> pestaña Traces -> el flame graph del backend.
+
+¿Por qué SOLO a mi dominio?
+    - Mandar estas cabeceras a terceros (Google, una CDN...) filtraría ids internos.
+    - Y otro dominio podría rechazar la petición por CORS (cabeceras que no espera).
+    Por eso la página y el API están en el MISMO dominio (nginx hace de proxy de /api).
+
+## 4. Lo demás que hace la página para RUM
+
+    // Quién es el usuario (sale en cada evento de su sesión)
+    DD_RUM.setUser({ id: name, name });
+
+    // Nombres legibles para los clics: en vez de "click on Buy" (x 10 productos), "buy Keyboard"
+    btn.dataset.ddActionName = `buy ${p.name}`;
+
+    // Y SIN escribir nada: errores de JavaScript, tiempos de carga (Core Web Vitals),
+    // cada llamada al API con su duración y su código de estado, los clics repetidos (rage clicks)...
+
+## 5. Lo que podría añadir un desarrollador (no está en la tienda)
+
+    DD_RUM.addAction('checkout_completed', { total: 99.8 });   // un hecho de negocio en la sesión
+    DD_RUM.addError(error);                                     // un error controlado
+    DD_RUM.setGlobalContextProperty('plan', 'gold');            // una etiqueta en toda la sesión
+    <input data-dd-privacy="mask">                              // enmascarar un campo concreto
+
+> Para el PO: el SDK de RUM es UNA etiqueta <script> y un init.
+    Lo que se pide al equipo de front: que esté en todas las páginas, con service/env/version,
+    allowedTracingUrls apuntando a nuestro API, setUser con un id interno (no el email), y la privacidad decidida.
