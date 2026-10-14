@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+    <!--
+      Plain text on purpose. dd.trace_id / dd.span_id / dd.service / dd.env /
+      dd.version are put in the MDC by dd-java-agent when DD_LOGS_INJECTION=true.
+      In class, the log pipeline lab parses this format with a grok rule and
+      then we compare it with the JSON alternative (logstash-logback-encoder).
+    -->
+    <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%thread] [dd.service=%X{dd.service} dd.env=%X{dd.env} dd.version=%X{dd.version} dd.trace_id=%X{dd.trace_id} dd.span_id=%X{dd.span_id}] %logger{36} - %msg%n</pattern>
+        </encoder>
+    </appender>
+    <root level="INFO">
+        <appender-ref ref="STDOUT"/>
+    </root>
+    <logger name="com.course.shop" level="INFO"/>
+</configuration>
+
+
+<!--
+Ejemplo del formato con el que se registran los logs:
+
+ <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%thread] [dd.service=%X{dd.service} dd.env=%X{dd.env} dd.version=%X{dd.version} dd.trace_id=%X{dd.trace_id} dd.span_id=%X{dd.span_id}] %logger{36} - %msg%n</pattern>
+
+
+ 2026-10-11 07:57:40.105 INFO  [http-nio-8081-exec-2] [dd.service=shop-api dd.env=course dd.version=1.0.0 dd.trace_id=6acb4173...c691 dd.span_id=5740378446534783345] c.course.shop.service.OrderService - Order created id=10 customer=ivan ... status=PAID
+ ----------------------- ----  ---------------------  --------------------------------------------------- ---------------------------------------------------------- -----------------------------------  --------------------------------------------------
+    FECHA / HORA         NIVEL   HILO                       UST de datadog                                   Si está disponible, la traza asociada                      En qué componente del código        Esto es el mensaje del log
+                                                                                                                (donde se ejecutó esa operación)                        se genero esta entrada de log
+
+
+Este formato debe ser parte de los requisitos del sistema.
+Por eso siempre hablamos de requisitos funcionales y requisitos no funcionales.
+-->
+

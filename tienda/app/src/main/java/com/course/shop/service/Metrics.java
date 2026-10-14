@@ -35,7 +35,9 @@ public class Metrics {
 
     public void paymentDuration(long millis, boolean ok) {
         client.histogram("payment.duration", millis, "status:" + (ok ? "ok" : "failed"));
-    }
+    } // Esta que hay aqui no debería estar aquí!
+    // No debería tratarse como una métrica... conceptualmente es una traza!
+    // Pero necesitaba un ejemplo apra incluir los histogramas.
 
     public void stockLevel(String productName, int stock) {
         client.gauge("stock.units", stock, "product:" + productName);
