@@ -535,3 +535,60 @@ Al terminar cada uno: botón "Test Notifications" y mirar el correo.
     - ¿Cuáles de vuestros monitores son sobre SÍNTOMAS y cuáles sobre CAUSAS?
     - ¿Cuál despertaría a alguien a las 3 am? ¿Cuál solo merece un email?
     - ¿Qué monitor de negocio le pediríais a vuestro equipo para vuestro producto de verdad?
+
+---
+
+# DASHBOARDS, NOTEBOOKS Y SHEETS
+
+Tres formas de trabajar con los MISMOS datos, para preguntas distintas:
+
+    Dashboard                         Notebook                               Sheets
+    -------------------------------   ------------------------------------   -------------------------------------
+    PARA QUÉ: vigilar la MISMA        CONTAR UNA HISTORIA con datos:         ANALIZAR como en Excel:
+    pregunta cada día                 investigación, post-mortem, informe    cruzar, calcular, pivotar
+    FORMA: rejilla de widgets         documento: texto, gráfica, texto...    hoja de cálculo: filas, columnas, fórmulas
+    TIEMPO: "ahora"                   un momento concreto, FIJADO            lo que consulte
+    QUIÉN: quien vigila               quien investiga o explica              quien analiza (un PO, negocio)
+
+## NOTEBOOKS
+
+Un documento dentro de Datadog que mezcla TEXTO con GRÁFICAS VIVAS de cualquier fuente
+(métricas, logs, trazas, RUM, eventos).
+
+    - Investigar mientras pasa algo: el equipo pega gráficas, trazas y logs y escribe lo que va viendo.
+      Todos en el MISMO documento (en vez de 40 capturas en un chat).
+    - POST-MORTEM: qué pasó, impacto, cronología, causa y acciones.
+      Se FIJA EL RANGO DE TIEMPO: dentro de 3 meses sigue enseñando ESE día (no "la última hora").
+      Plantilla: New Notebook -> Templates -> Postmortem.
+    - Documentación viva: runbooks con las gráficas dentro; informes semanales programados por email (PDF).
+    - Cualquier gráfica de un dashboard o de un explorador -> menú -> "Export to notebook".
+
+Ejercicio natural: el POST-MORTEM DEL STOCK AGOTADO DEL MARTES
+    1. Resumen        la tienda estuvo X horas sin vender
+    2. Impacto        gráfica de shop.orders.created por status -> "paid" a cero
+    3. Cronología     cuándo empezó, cuándo se detectó, cuándo se arregló
+                      gráfica de shop.stock.units llegando a 0 y saltando a 1.000.000
+    4. Evidencias     lista de logs "Out of stock"; una traza con el 409 y SIN el span de pago
+    5. Causa          nadie repone stock y no había ninguna alerta
+    6. Acciones       el monitor "la tienda no vende" (con AVISAR SI NO HAY DATOS), con dueño y fecha
+
+## SHEETS
+
+Lo más nuevo de Datadog: HOJAS DE CÁLCULO SOBRE LOS DATOS DE DATADOG, sin exportar a Excel.
+
+    - Se trae a una tabla el resultado de una consulta: logs, trazas, RUM, métricas...
+      o una REFERENCE TABLE (una tabla propia subida a Datadog: un CSV de productos, de clientes...).
+    - Encima se trabaja como en una hoja de cálculo:
+        columnas calculadas con FÓRMULAS · filtros · TABLAS DINÁMICAS (pivotar) ·
+        CRUZAR dos tablas por una columna (como un BUSCARV)
+    - El resultado se puede llevar a un dashboard o a un notebook.
+
+Es la herramienta más cercana a un PO: es SU lenguaje. Ejemplos con la tienda:
+    - Logs de "Payment rejected" de la semana, PIVOTADOS por cliente y día:
+      ¿hay clientes a los que les falla siempre?
+    - Pedidos de los logs CRUZADOS con una tabla de precios / márgenes (Reference Table):
+      margen perdido por pagos fallidos.
+    - Sesiones RUM por país y navegador, con una columna calculada "% con error".
+
+OJO: Sheets es reciente. En la org del curso (trial) puede salir como "preview" o no estar activado.
+Buscarlo con Cmd+K -> "Sheets". Si no aparece, se cuenta como concepto.
