@@ -872,6 +872,70 @@ Los que creéis vosotros saldrán también en "Alertas de shop-api" SI LES PONÉ
       2. Condición:     a && b
     Texto equivalente:  126530426 && 126530428    (son los ids de los dos monitores)
 
+    ¿Por qué está en "Sin datos"?  Mezcla un monitor MULTI-ALERTA (uno por endpoint) con uno SIMPLE
+    (un único estado). El compuesto intenta casar los grupos de los dos ("este endpoint" con "...nada")
+    y no encuentra pareja. Regla: en un compuesto, los dos monitores con LOS MISMOS GRUPOS
+    (los dos simples, o los dos agrupados por lo mismo).
+    -> La versión buena es la 5.c: compuesto de dos monitores SIMPLES, el 5.a y el 5.b.
+
+### 5.a Latencia de la compra (monitor APM)
+    Nombre propuesto:   <tu nombre> - Tienda - Compra lenta
+    Tipo:               APM -> APM Metrics  (el formulario más fácil: todo con desplegables)
+    Qué vigila:         el p95 de lo que tarda la compra (POST /api/orders), media de 5 minutos
+    Estado esperado:    🟢 OK (la compra ronda 0,5 s)
+    Para qué en clase:  la LATENCIA (señal dorada) sin saber el nombre de la métrica
+
+    Cómo se configura:  Monitors -> New Monitor -> APM -> APM Metrics
+      1. Qué servicio:  Env course · Service shop-api · Operation servlet.request
+                        · Resource POST /api/orders   (o "all" para todo el servicio)
+      2. Qué medir:     Latency -> p95       (en la misma lista: Error rate, Hits, Apdex)
+      3. Tipo:          Simple alert  (un único estado)
+                        [Multi alert por resource_name = un estado por endpoint: es el monitor 4]
+      4. Evaluar:       la MEDIA de los últimos 5 minutos
+      5. Umbrales:      alerta > 1 s · aviso > 0,7 s · recuperación < 0,5 s
+      6. Mensaje:       qué pasa ("comprar tarda {{value}} s"), impacto (clientes esperando), dónde mirar
+                        (APM -> shop-api -> POST /api/orders -> span payment.charge)
+    Texto equivalente:  avg(last_5m):p95:trace.servlet.request{env:course,service:shop-api,resource_name:post_/api/orders} > 1
+                        (la métrica trace.servlet.request la genera el agente de Java: es una DISTRIBUCIÓN,
+                         por eso tiene percentiles; está en segundos)
+    Atajo:              APM -> Services -> shop-api -> botón para crear un monitor (sale ya rellenado)
+
+### 5.b Tráfico alto (monitor APM)
+    Nombre propuesto:   <tu nombre> - Tienda - Tráfico alto
+    Tipo:               APM -> APM Metrics, medida Hits
+    Qué vigila:         peticiones por segundo a shop-api, media de 5 minutos
+    Estado esperado:    🟢 OK (el robot de carga genera ~1,6 peticiones/s)
+    Para qué en clase:  el TRÁFICO (señal dorada)... y la pregunta: ¿es un síntoma o una causa?
+
+    Cómo se configura:  Monitors -> New Monitor -> APM -> APM Metrics
+      1. Qué servicio:  Env course · Service shop-api · Operation servlet.request · Resource all
+      2. Qué medir:     Hits, como tasa POR SEGUNDO
+      3. Tipo:          Simple alert
+      4. Evaluar:       la MEDIA de los últimos 5 minutos
+      5. Umbrales:      alerta > 4 /s · aviso > 3 /s   (= el tráfico normal x2 / x2,5)
+      6. Mensaje:       "el tráfico se ha multiplicado: ¿campaña, robot, ataque?"  -> solo un EMAIL, no despertar
+    Texto equivalente:  avg(last_5m):sum:trace.servlet.request.hits{env:course,service:shop-api}.as_rate() > 4
+
+    Mucho tráfico NO es malo en sí (puede ser una campaña que funciona): es una CAUSA POSIBLE, no un síntoma.
+    Alternativas más listas que un umbral fijo:
+      - Anomaly, dirección ABOVE: "más de lo normal PARA ESTA HORA" (necesita semanas de historia)
+      - Change alert: "un 100 % más que hace una hora" (detecta subidas bruscas, sin historia)
+    Y el contrario, tráfico anormalmente BAJO (dirección BELOW), suele interesar más a un PO:
+      "nadie entra en la tienda".
+
+### 5.c No aguantamos la carga (compuesto de 5.a y 5.b)
+    Nombre propuesto:   <tu nombre> - Tienda - No aguantamos la carga
+    Tipo:               Compuesto (Composite)
+    Qué vigila:         la compra va LENTA (5.a) Y hay MUCHO tráfico (5.b) a la vez
+    Para qué en clase:  un compuesto BIEN hecho (dos monitores simples) y con sentido de negocio:
+                        "nos ha llegado más gente de la que podemos atender"
+
+    Cómo se configura:  Monitors -> New Monitor -> Composite
+      1. Elegir:        a = "<tu nombre> - Tienda - Compra lenta"   b = "<tu nombre> - Tienda - Tráfico alto"
+      2. Condición:     a && b
+      3. Mensaje:       ESTE sí puede despertar a alguien (lo sufre el cliente y tiene una causa clara):
+                        escalar / ampliar capacidad / activar la cola de espera
+
 ### 6. Hay tráfico (pieza auxiliar del compuesto)
     Nombre en Datadog:  ivan - [shop] shop-api has traffic
     Tipo:               Métrica
