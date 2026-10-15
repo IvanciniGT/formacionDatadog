@@ -78,8 +78,23 @@ Las fórmulas (a / b * 100) son lo único que se escribe a mano.
         Widget:   Query Value (número)   —   título: "Ticket máximo"
                   q1 =  max:shop.orders.value{$env}
                   unidad:  €
-                  (Un p95 del ticket necesita ACTIVAR PERCENTILES en la métrica: se pagan y
-                   solo se calculan DESDE ESE MOMENTO. Por eso aquí va el máximo.)
+                  (El p50 / p95 del ticket necesitan ACTIVAR PERCENTILES en la métrica:
+                   se pagan y solo se calculan DESDE ESE MOMENTO.)
+
+    ¿Cuánto gasta un cliente "típico"? ¿Y los que más?
+        Widget:   Query Value (número) x 2   —   títulos: "Ticket mediano (p50)" y "Ticket p95"
+                  q1 =  p50:shop.orders.value{$env}
+                  q1 =  p95:shop.orders.value{$env}
+                  unidad:  €
+
+    ¿Cómo se reparten los importes de los pedidos?
+        Widget:   Distribution (histograma)   —   título: "Distribución del importe de los pedidos"
+                  histogram:shop.orders.value{$env}
+                  + nota amarilla con flecha: "Cómo leerla"
+                  En la tienda: 10 productos de precio fijo y 1 unidad por pedido -> 10 BARRAS
+                  (19,90 · 29 · 34,50 · 49,90 · 59 · 79 · 99 · 129 · 249 · 499 €).
+                  El ticket MEDIO (~124 €) NO COINCIDE CON NINGÚN PEDIDO REAL: la media no representa a nadie.
+                  La MEDIANA (p50) es lo que gasta la mitad de los clientes.
 
 ### ¿Cumplimos la promesa? ¿Funciona desde fuera?
 
@@ -750,6 +765,7 @@ No muestran datos... pero hacen que un dashboard SE ENTIENDA sin que nadie lo ex
 
     Pestaña NEGOCIO
       - Portada (gris)                         arriba de todo
+      - "Cómo leerla" (amarillo, con flecha)   junto a la distribución del importe
       - "VENTAS" (Free Text)                   título grande del primer grupo
       - "Ojo con este importe" (amarillo)      con flecha hacia el importe total
       - "Enlaces útiles" (azul)                en "¿Cumplimos la promesa?"
