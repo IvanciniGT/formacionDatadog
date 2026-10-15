@@ -792,21 +792,143 @@ Los que creéis vosotros saldrán también en "Alertas de shop-api" SI LES PONÉ
 
 ## Pestaña GUARDIA: "Alertas de shop-api"
 
-| Monitor (en español)                  | Nombre en Datadog                                   | Tipo                        | Qué vigila                                                                 | Umbrales                          | Estado habitual | Para qué sirve en clase |
-|---------------------------------------|-----------------------------------------------------|-----------------------------|----------------------------------------------------------------------------|-----------------------------------|-----------------|-------------------------|
-| Tasa de errores de la tienda          | ivan - [shop] shop-api error rate                   | Métrica con fórmula         | % de peticiones con error: errores / peticiones x 100, últimos 10 min     | alerta > 20 % · aviso > 10 %      | 🟢 OK (~4 %)     | Un SÍNTOMA bien elegido: errores como TASA, no como número |
-| Pico de pagos rechazados              | ivan - [shop] payment rejections spike              | Logs                        | Cuántas líneas "Payment rejected" aparecen en los logs en 5 min            | alerta > 20 · aviso > 10          | 🔴 Alerta        | El mismo problema que los pagos fallidos, visto desde los LOGS |
-| Volumen de pedidos fuera de lo normal | ivan - [shop] orders volume anomaly                 | Anomalía                    | Pedidos por debajo de la banda "normal" que Datadog aprende para cada hora | fuera de la banda (2 desviaciones) | 🟢 OK            | Umbral que APRENDE (estacionalidad). Necesita historia: aquí solo hay unos días |
-| Compra lenta, endpoint a endpoint     | ivan - [shop] shop-api p95 latency high on {{resource_name.name}} | Métrica, MULTI-ALERTA | p95 de la latencia POR ENDPOINT, media de 5 min                           | alerta > 1 s · aviso > 0,7 s      | 🔴 Alerta (solo /api/slow) | MULTI-ALERTA: un estado por endpoint. /api/slow es lento a propósito: ¿se excluye o se acepta? |
-| Latencia alta Y hay tráfico           | ivan - [shop] latency high AND traffic present      | Compuesto (A Y B)           | Salta solo si la latencia es alta Y además hay tráfico real                | combina los dos monitores         | ⚪ Sin datos     | Evitar avisos a las 4 am por una petición suelta. Ahora está en "sin datos": revisarlo antes de enseñarlo |
-| Hay tráfico (pieza auxiliar)          | ivan - [shop] shop-api has traffic                  | Métrica                     | Más de 10 peticiones en 5 min                                              | alerta > 10                       | 🔴 Alerta        | Es la pieza B del compuesto. MAL DISEÑO para un panel: "alerta" aquí significa BUENA noticia (hay tráfico) |
+### 1. Tasa de errores de la tienda
+    Nombre en Datadog:  ivan - [shop] shop-api error rate
+    Tipo:               Métrica, con FÓRMULA
+    Qué vigila:         el % de peticiones de shop-api que acaban en error (5xx), en los últimos 10 minutos
+    Estado habitual:    🟢 OK (ronda el 4 %)
+    Para qué en clase:  un SÍNTOMA bien elegido; los errores como TASA, no como número
+
+    Cómo se configura:  Monitors -> New Monitor -> Metric
+      1. Consulta a:    métrica trace.servlet.request.errors · from env:course, service:shop-api · sum · Σ as_count
+         Consulta b:    métrica trace.servlet.request.hits   · from env:course, service:shop-api · sum · Σ as_count
+         Fórmula:       a / b * 100
+      2. Evaluar:       la SUMA ("sum") de los últimos 10 minutos
+      3. Umbrales:      alerta > 20 · aviso > 10 · recuperación (alert recovery) < 8
+      4. Sin datos:     no avisar
+    Texto equivalente:  sum(last_10m):sum:trace.servlet.request.errors{env:course,service:shop-api}.as_count()
+                        / sum:trace.servlet.request.hits{env:course,service:shop-api}.as_count() * 100 > 20
+
+### 2. Pico de pagos rechazados
+    Nombre en Datadog:  ivan - [shop] payment rejections spike
+    Tipo:               Logs
+    Qué vigila:         cuántas líneas de log de ERROR con el texto "Payment rejected" aparecen en 5 minutos
+    Estado habitual:    🔴 Alerta (el proveedor de pagos falla ~30 % a propósito)
+    Para qué en clase:  el MISMO problema que los pagos fallidos, visto desde los LOGS en vez de las métricas
+
+    Cómo se configura:  Monitors -> New Monitor -> Logs
+      1. Búsqueda:      service:shop-api status:error "Payment rejected"
+      2. Medida:        recuento de logs (count)
+      3. Evaluar:       los últimos 5 minutos
+      4. Umbrales:      alerta > 20 · aviso > 10
+      5. Opcional:      "Include a sample of logs" -> el correo trae ejemplos de las líneas
+    Texto equivalente:  logs("service:shop-api status:error \"Payment rejected\"").index("*").rollup("count").last("5m") > 20
+
+### 3. Volumen de pedidos fuera de lo normal
+    Nombre en Datadog:  ivan - [shop] orders volume anomaly
+    Tipo:               Anomalía (Anomaly)
+    Qué vigila:         que los pedidos caigan POR DEBAJO de lo que Datadog considera normal para esa hora
+    Estado habitual:    🟢 OK
+    Para qué en clase:  un umbral que APRENDE. No digo "menos de 10"; Datadog aprende cuánto se vende
+                        normalmente a cada hora. Necesita HISTORIA (aquí solo hay unos días).
+
+    Cómo se configura:  Monitors -> New Monitor -> Anomaly
+      1. Consulta:      métrica shop.orders.created · from env:course · sum · Σ as_count
+      2. Algoritmo:     agile · desviaciones: 2 · dirección: BELOW (solo me preocupa que baje)
+      3. Estacionalidad: hourly (cada hora)
+      4. Evaluar:       alerta si en los últimos 15 minutos el 50 % de los puntos está fuera de la banda
+                        (recuperación: menos del 25 %)
+      5. En el editor se ve la BANDA GRIS de "lo normal" sobre los datos: ahí se entiende enseguida.
+    Texto equivalente:  avg(last_15m):anomalies(sum:shop.orders.created{env:course}.as_count(), 'agile', 2,
+                        direction='below', seasonality='hourly') >= 0.5
+
+### 4. Compra lenta, endpoint a endpoint
+    Nombre en Datadog:  ivan - [shop] shop-api p95 latency high on {{resource_name.name}}
+    Tipo:               Métrica, MULTI-ALERTA (un estado por endpoint)
+    Qué vigila:         el p95 de la latencia de CADA endpoint de shop-api, media de 5 minutos
+    Estado habitual:    🔴 Alerta, pero SOLO en /api/slow (es lento a propósito); el resto OK
+    Para qué en clase:  MULTI-ALERTA: un monitor, un estado por grupo. Y la decisión: ¿excluyo /api/slow
+                        o lo acepto? (esa decisión también es del PO)
+
+    Cómo se configura:  Monitors -> New Monitor -> Metric  (o APM, que hace lo mismo con menos pasos)
+      1. Consulta:      métrica trace.servlet.request · from env:course, service:shop-api
+                        · agregación p95 · AGRUPADO por ("by") resource_name   <- esto lo hace multi-alerta
+      2. Evaluar:       la MEDIA de los últimos 5 minutos
+      3. Umbrales:      alerta > 1 · aviso > 0,7 · recuperación < 0,5   (en segundos)
+      4. Opciones:      "require a full window of data" (no evaluar con datos a medias)
+                        renotificar cada 30 min si sigue en alerta
+      5. Mensaje:       usar {{resource_name.name}} para decir CUÁL endpoint
+    Texto equivalente:  avg(last_5m):p95:trace.servlet.request{env:course,service:shop-api} by {resource_name} > 1
+
+### 5. Latencia alta Y hay tráfico
+    Nombre en Datadog:  ivan - [shop] latency high AND traffic present
+    Tipo:               Compuesto (Composite)
+    Qué vigila:         salta SOLO si el monitor 4 (compra lenta) Y el monitor 6 (hay tráfico) están en alerta a la vez
+    Estado habitual:    ⚪ Sin datos  -> REVISARLO antes de enseñarlo
+    Para qué en clase:  evitar avisos a las 4 am por una única petición lenta
+
+    Cómo se configura:  Monitors -> New Monitor -> Composite
+      1. Elegir los monitores:  a = "Compra lenta, endpoint a endpoint"   b = "Hay tráfico"
+      2. Condición:     a && b
+    Texto equivalente:  126530426 && 126530428    (son los ids de los dos monitores)
+
+### 6. Hay tráfico (pieza auxiliar del compuesto)
+    Nombre en Datadog:  ivan - [shop] shop-api has traffic
+    Tipo:               Métrica
+    Qué vigila:         que haya más de 10 peticiones a shop-api en 5 minutos
+    Estado habitual:    🔴 Alerta   <- y es BUENA noticia: hay tráfico
+    Para qué en clase:  como EJEMPLO DE MAL DISEÑO en un panel: "alerta" tiene que significar SIEMPRE algo malo.
+                        Solo tiene sentido como pieza del compuesto; nunca debería verse en un panel ni avisar a nadie.
+
+    Cómo se configura:  Monitors -> New Monitor -> Metric
+      1. Consulta:      métrica trace.servlet.request.hits · from env:course, service:shop-api · sum · Σ as_count
+      2. Evaluar:       la SUMA de los últimos 5 minutos
+      3. Umbral:        alerta > 10
+      4. Sin datos:     avisar si no hay datos durante 10 minutos
+    Texto equivalente:  sum(last_5m):sum:trace.servlet.request.hits{env:course,service:shop-api}.as_count() > 10
 
 ## Pestaña NEGOCIO: "Robots (tests sintéticos)"
 
-| Monitor (en español)             | Nombre en Datadog                        | Tipo        | Qué vigila                                                                      | Estado habitual | Para qué sirve en clase |
-|----------------------------------|------------------------------------------|-------------|---------------------------------------------------------------------------------|-----------------|-------------------------|
-| El catálogo responde             | [Synthetics] ivan - shop api products    | Sintético de API | Un robot pide el catálogo de productos cada 5 min desde Fráncfort, París y Dublín: responde 200, en < 1 s, con JSON | 🟢 OK | "¿Funciona desde fuera?" sin que haya clientes |
-| Se puede comprar                 | [Synthetics] ivan - shop checkout journey | Sintético de navegador | Un robot abre la tienda en un navegador cada 15 min, se identifica, compra y comprueba que el pedido aparece | 🟢 OK | El recorrido de compra completo, probado como lo haría un cliente |
+Un test sintético crea SOLO su monitor ("[Synthetics] ..."): no se configura en Monitors, sino en el propio test.
+
+### 7. El catálogo responde
+    Nombre en Datadog:  [Synthetics] ivan - shop api products
+    Tipo:               Sintético de API (HTTP)
+    Qué vigila:         que un robot, desde Fráncfort, Dublín y París, pida el catálogo cada 5 minutos y funcione
+    Estado habitual:    🟢 OK
+    Para qué en clase:  "¿funciona desde fuera?" sin esperar a que entre un cliente
+
+    Cómo se configura:  Digital Experience -> Synthetic Monitoring -> New Test -> API Test -> HTTP
+      1. Petición:      GET https://datadog.ivanosuna.com/api/products
+      2. Comprobaciones (assertions):
+                        código de estado = 200
+                        tiempo de respuesta < 1000 ms
+                        cabecera content-type contiene application/json
+                        el cuerpo contiene "Keyboard"
+      3. Localizaciones: Frankfurt (eu-central-1), Ireland (eu-west-1), Paris (eu-west-3)
+      4. Frecuencia:    cada 5 minutos
+      5. Alerta:        si falla en al menos 2 de las 3 localizaciones; 1 reintento a los 30 s
+                        (una ciudad sola puede tener un mal día; dos no es casualidad)
+      6. Mensaje y destinatarios: como cualquier monitor
+
+### 8. Se puede comprar
+    Nombre en Datadog:  [Synthetics] ivan - shop checkout journey
+    Tipo:               Sintético de NAVEGADOR (browser)
+    Qué vigila:         que un robot, con un navegador de verdad, haga el recorrido de compra cada 15 minutos
+    Estado habitual:    🟢 OK
+    Para qué en clase:  el recorrido COMPLETO de un cliente, probado como lo haría él
+
+    Cómo se configura:  Digital Experience -> Synthetic Monitoring -> New Test -> Browser Test
+      1. URL de inicio: https://datadog.ivanosuna.com/
+      2. Pasos (se GRABAN con la extensión de Chrome "Datadog test recorder", sin código):
+                        escribir "synthetic" en la caja del nombre
+                        pulsar "Identify in RUM"
+                        pulsar "Buy" en el primer producto
+                        comprobar que el bloque "Last orders" contiene "synthetic"
+      3. Localizaciones: Frankfurt, Ireland, Paris
+      4. Frecuencia:    cada 15 minutos
+      5. Alerta:        si falla en al menos 2 de las 3 localizaciones; 1 reintento a los 30 s
+      Ojo: cada ejecución del robot es también una SESIÓN de RUM (@session.type:synthetics).
 
 ## Lo que enseñan (y lo que NO hay que copiar)
 
