@@ -569,6 +569,7 @@ Mi elección está totalmente condicionada al tipo de datos que quiero visualiza
               - Pie
               - Barra 
         Estadístico: RECUENTO (Suma de las frecuencias: TOTAL DE DATOS QUE TENGO)
+        - Tree map
 
      > Ejemplo: Status code
 
