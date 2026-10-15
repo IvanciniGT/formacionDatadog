@@ -4,91 +4,211 @@
 
 https://app.datadoghq.eu/dashboard/s9r-yur-pc5/ivan---tienda-referencia
 
-UN dashboard con DOS PESTAÑAS (una por perfil), y en cada pestaña GRUPOS que contestan UNA PREGUNTA.
-Variable de plantilla:  $env  (por defecto: course)   -> el mismo dashboard vale para prod, pre, dev...
+UN dashboard con DOS PESTAÑAS (una por perfil); en cada pestaña, GRUPOS que contestan UNA PREGUNTA.
+Variable de plantilla:  $env  (por defecto: course)  -> el mismo dashboard vale para prod, pre, dev...
 
 Regla de diseño:  PREGUNTA  ->  TIPO DE DATO  ->  WIDGET  ->  CONSULTA
 
+Las consultas están COMPLETAS, tal y como están guardadas. En la interfaz se construyen con el FORMULARIO
+(métrica, from, sum by, función as_count...). Para verlo: lápiz de editar el widget -> sale el formulario relleno.
+Las fórmulas (a / b * 100) son lo único que se escribe a mano.
+
 ---
 
-## PESTAÑA 1: NEGOCIO   (para: dirección comercial, reunión de los lunes)
+## PESTAÑA 1: NEGOCIO   (para: dirección comercial)
 
 ### ¿Cuánto vendemos?
 
-    Pregunta                                   Widget                        Consulta
-    ----------------------------------------   ---------------------------   --------------------------------------------------------------------
-    ¿Cuántos pedidos pagados llevamos hoy?     Query Value (número grande)   sum:shop.orders.created{$env,status:paid}.as_count()     [rango: 1 día]
-    ¿Qué % de compras sale bien?               Query Value + SEMÁFORO        a = ...{status:paid}.as_count()   b = ...{*}.as_count()   a / b * 100
-                                               (formato condicional)           verde >= 65 · amarillo >= 50 · rojo < 50
-    ¿Cuánto importe suman los pedidos?         Query Value                   sum:shop.orders.value{$env}
-                                                                             OJO: ¡INCLUYE LOS NO PAGADOS! La métrica no lleva status.
-                                                                             -> Es un dato que HAY QUE PEDIR bien al equipo.
-    ¿Vendemos más o menos que ayer?            Timeseries: barras (hoy)      sum:shop.orders.created{$env,status:paid}.as_count()
-                                               + línea discontinua (ayer)    timeshift(... , -86400)    <- la misma, 1 día antes
-    ¿Cuántos pedidos van bien y cuántos no?    Timeseries: ÁREA APILADA      sum:shop.orders.created{$env} by {status}.as_count()
-                                               + rayas de EVENTOS            eventos: sources:kubernetes kube_namespace:datadog-curso
+    ¿Cuántos pedidos pagados llevamos hoy?
+        Widget:   Query Value (número)   —   título: "Pedidos pagados (hoy)"
+                  q1 =  sum:shop.orders.created{$env,status:paid}.as_count()
+                  rango propio:  último día
+
+    ¿Qué % de compras sale bien?
+        Widget:   Query Value (número)   —   título: "% de compras con éxito"
+                  a =  sum:shop.orders.created{$env,status:paid}.as_count()
+                  b =  sum:shop.orders.created{$env}.as_count()
+                  fórmula:  a / b * 100
+                  semáforo:  verde si >= 65 · amarillo si >= 50 · rojo si < 50
+                  unidad:  %
+
+    ¿Cuánto importe suman los pedidos?
+        Widget:   Query Value (número)   —   título: "Importe total pedidos (¡incluye NO pagados!)"
+                  q1 =  sum:shop.orders.value{$env}
+                  unidad:  €
+                  OJO: la métrica shop.orders.value NO lleva status: suma también los pedidos
+                  no pagados. Es un dato que HAY QUE PEDIR bien al equipo.
+
+    ¿Vendemos más o menos que ayer?
+        Widget:   Timeseries   —   título: "Pedidos pagados: hoy (barras) vs. ayer a la misma hora (línea)"
+                  sum:shop.orders.created{$env,status:paid}.as_count()   [bars]
+                  timeshift(sum:shop.orders.created{$env,status:paid}.as_count(), -86400)   [line]
+
+    ¿Cuántos pedidos van bien y cuántos no?
+        Widget:   Timeseries   —   título: "Pedidos por estado (área apilada)"
+                  sum:shop.orders.created{$env} by {status}.as_count()   [area]
+                  rayas de eventos:  sources:kubernetes kube_namespace:datadog-curso
 
 ### ¿Qué se vende?
 
-    ¿Qué categoría vende más?                  Sunburst (TARTA)              sum:shop.orders.created{$env,status:paid} by {category}.as_count()
-    ¿Qué categoría trae más importe?           TREEMAP                       sum:shop.orders.value{$env} by {category}
-    Resumen por categoría                      TABLA (Query Table)           pagados, pago fallido, % fallo = fal / (pag + fal) * 100, ticket medio
-    ¿De cuánto es un pedido normal?            Query Value                   avg:shop.orders.value{$env}            (ticket medio)
-    ¿Y el pedido más grande?                   Query Value                   max:shop.orders.value{$env}            (ticket máximo)
-                                                                             (el p95 necesita ACTIVAR PERCENTILES en la métrica:
-                                                                              se activan, se pagan, y solo calculan DESDE ESE MOMENTO)
+    ¿Qué categoría vende más?
+        Widget:   Pie / Sunburst (tarta)   —   título: "Pedidos pagados por categoría (tarta)"
+                  q1 =  sum:shop.orders.created{$env,status:paid} by {category}.as_count()
+
+    ¿Qué categoría trae más importe?
+        Widget:   Treemap   —   título: "Importe por categoría (treemap)"
+                  q1 =  sum:shop.orders.value{$env} by {category}
+
+    Todo por categoría, en una tabla
+        Widget:   Table (tabla)   —   título: "Resumen por categoría (tabla)"
+                  pag =  sum:shop.orders.created{$env,status:paid} by {category}.as_count()
+                  fal =  sum:shop.orders.created{$env,status:payment_failed} by {category}.as_count()
+                  imp =  avg:shop.orders.value{$env} by {category}
+                  fórmula:  pag   (columna "Pagados")
+                  fórmula:  fal   (columna "Pago fallido")
+                  fórmula:  fal / (pag + fal) * 100   (columna "% fallo")
+                  fórmula:  imp   (columna "Ticket medio (€)")
+
+    ¿De cuánto es un pedido normal?
+        Widget:   Query Value (número)   —   título: "Ticket medio"
+                  q1 =  avg:shop.orders.value{$env}
+                  unidad:  €
+
+    ¿Y el pedido más grande?
+        Widget:   Query Value (número)   —   título: "Ticket máximo"
+                  q1 =  max:shop.orders.value{$env}
+                  unidad:  €
+                  (Un p95 del ticket necesita ACTIVAR PERCENTILES en la métrica: se pagan y
+                   solo se calculan DESDE ESE MOMENTO. Por eso aquí va el máximo.)
 
 ### ¿Cumplimos la promesa? ¿Funciona desde fuera?
 
-    ¿Cumplimos el SLO? ¿Cuánto margen queda?   SLO                           "Ivan - Tienda - Peticiones Procesadas Correctamente" (7 días)
-    ¿Se puede comprar ahora desde fuera?       MONITOR SUMMARY               monitores type:synthetics (los robots de Fráncfort, París y Dublín)
+    ¿Cumplimos la promesa? ¿Cuánto margen queda?
+        Widget:   SLO   —   título: "SLO: peticiones procesadas correctamente"
+                  SLO: "Ivan - Tienda - Peticiones Procesadas Correctamente" (7 días)
 
-### ¿Quién nos visita y desde dónde?  (RUM, últimos 7 días)
+    ¿Se puede comprar ahora desde fuera?
+        Widget:   Monitor Summary   —   título: "Robots (tests sintéticos)"
+                  búsqueda:  type:synthetics
 
-    ¿Desde qué países?                         GEOMAP (mapa del mundo)       RUM: @type:session  agrupado por @geo.country_iso_code
-    ¿Cuántos clientes reales?                  Query Value                   RUM: @type:session @session.type:user
-    ¿Y cuántas visitas son del robot?          Query Value                   RUM: @type:session @session.type:synthetics
-    ¿Personas o robots, a lo largo del tiempo? Timeseries: barras            RUM: @type:session  agrupado por @session.type
+### ¿Quién nos visita y desde dónde? (RUM, 7 días)
+
+    ¿Desde qué países nos visitan?
+        Widget:   Geomap (mapa)   —   título: "Sesiones por país (mapa)"
+                  q1 (RUM, recuento):  @type:session   agrupado por @geo.country_iso_code
+                  rango propio:  última semana
+
+    ¿Cuántos clientes reales?
+        Widget:   Query Value (número)   —   título: "Sesiones de clientes reales"
+                  q1 (RUM, recuento):  @type:session @session.type:user
+                  rango propio:  última semana
+
+    ¿Cuántas visitas son del robot?
+        Widget:   Query Value (número)   —   título: "Sesiones del robot sintético"
+                  q1 (RUM, recuento):  @type:session @session.type:synthetics
+                  rango propio:  última semana
+
+    ¿Personas o robots, a lo largo del tiempo?
+        Widget:   Timeseries   —   título: "Sesiones por tipo (personas vs. robot)"
+                  q1 (RUM, recuento):  @type:session   agrupado por @session.type
+                  rango propio:  última semana
 
 ---
 
-## PESTAÑA 2: GUARDIA   (para: quien está de guardia · orden: errores -> latencia -> tráfico -> recursos)
+## PESTAÑA 2: GUARDIA   (para: quien está de guardia)
 
 ### ¿Está roto? ¿Va lento?
 
-    ¿Qué % de peticiones falla?                Query Value + SEMÁFORO        errors / hits * 100   (trace.servlet.request.errors / .hits)
-                                                                               verde < 2 · amarillo < 5 · rojo >= 5
-    ¿Cuánto tarda comprar (p95)?               Query Value + SEMÁFORO        p95:trace.servlet.request{...,resource_name:post_/api/orders}
-                                                                               verde < 1 s · rojo >= 1 s
-    ¿Hay alertas saltando?                     MONITOR SUMMARY               monitores con service:shop-api
-    Todo el servicio de un vistazo             SERVICE SUMMARY (APM)         shop-api / servlet.request: peticiones, errores, latencia,
-                                                                             desglose, distribución y lista de endpoints. TODO EN UNO.
+    ¿Qué % de peticiones falla?
+        Widget:   Query Value (número)   —   título: "% de errores (shop-api)"
+                  a =  sum:trace.servlet.request.errors{$env,service:shop-api}.as_count()
+                  b =  sum:trace.servlet.request.hits{$env,service:shop-api}.as_count()
+                  fórmula:  a / b * 100
+                  semáforo:  verde si < 2 · amarillo si < 5 · rojo si >= 5
+                  unidad:  %
+
+    ¿Cuánto tarda comprar?
+        Widget:   Query Value (número)   —   título: "p95 de la compra"
+                  q1 =  p95:trace.servlet.request{$env,service:shop-api,resource_name:post_/api/orders}
+                  semáforo:  verde si < 1 · rojo si >= 1
+                  unidad:  s
+
+    ¿Hay alertas saltando?
+        Widget:   Monitor Summary   —   título: "Alertas de shop-api"
+                  búsqueda:  service:shop-api
+
+    Todo el servicio de un vistazo
+        Widget:   Service Summary (APM)   —   título: "Resumen del servicio shop-api (APM)"
+                  servicio shop-api, operación servlet.request, entorno course
+                  peticiones, errores, latencia, desglose, distribución y lista de endpoints: TODO EN UNO
 
 ### ¿Dónde está el problema?
 
-    ¿Qué endpoint falla o tarda más?           TABLA (Query Table)           por resource_name: peticiones, errores, % error, p95
-    ¿Cuáles son muy usados Y lentos?           SCATTER PLOT (dispersión)     x = peticiones por endpoint · y = p95 por endpoint
-                                                                             -> arriba a la derecha: los que más duelen
-    ¿Cómo se reparten los tiempos de compra?   DISTRIBUTION (histograma)     histogram:trace.servlet.request{...,resource_name:post_/api/orders}
-    ¿Qué endpoint da errores y cuándo?         Timeseries: barras + eventos  sum:trace.servlet.request.errors{...} by {resource_name}.as_count()
-    ¿Es el proveedor de pagos?                 Timeseries: líneas            avg:shop.payment.duration.avg{env:course} by {status}
-                                               + MARCADOR (umbral 500 ms)
+    ¿Qué endpoint falla o tarda más?
+        Widget:   Table (tabla)   —   título: "Endpoints (tabla)"
+                  h =  sum:trace.servlet.request.hits{service:shop-api,env:course} by {resource_name}.as_count()
+                  e =  sum:trace.servlet.request.errors{service:shop-api,env:course} by {resource_name}.as_count()
+                  p =  p95:trace.servlet.request{service:shop-api,env:course} by {resource_name}
+                  fórmula:  h   (columna "Peticiones")
+                  fórmula:  e   (columna "Errores")
+                  fórmula:  e / h * 100   (columna "% error")
+                  fórmula:  p   (columna "p95 (s)")
+
+    ¿Cuáles son muy usados Y lentos?
+        Widget:   Scatter Plot (dispersión)   —   título: "Endpoints: tráfico (x) vs. lentitud p95 (y)"
+                  eje x:  sum:trace.servlet.request.hits{service:shop-api,env:course} by {resource_name}.as_count()
+                  eje y:  p95:trace.servlet.request{service:shop-api,env:course} by {resource_name}
+                  -> arriba a la derecha: los que más duelen (muy usados y lentos)
+
+    ¿Cómo se reparten los tiempos de compra?
+        Widget:   Distribution (histograma)   —   título: "Distribución del tiempo de compra (POST /api/orders)"
+                  histogram:trace.servlet.request{service:shop-api,env:course,resource_name:post_/api/orders}
+
+    ¿Qué endpoint da errores y cuándo?
+        Widget:   Timeseries   —   título: "Errores por endpoint (barras)"
+                  sum:trace.servlet.request.errors{service:shop-api,env:course} by {resource_name}.as_count()   [bars]
+                  rayas de eventos:  sources:kubernetes kube_namespace:datadog-curso
+
+    ¿Es culpa del proveedor de pagos?
+        Widget:   Timeseries   —   título: "Proveedor de pagos: duración media por resultado (ms)"
+                  avg:shop.payment.duration.avg{env:course} by {status}   [line]
+                  marcador:  y = 500  (500 ms)
 
 ### Mapa del sistema
 
-    ¿Quién llama a quién?                      SERVICE MAP                   los servicios alrededor de shop-api (shop-web, postgres...)
+    ¿Quién llama a quién?
+        Widget:   Service Map   —   título: "Mapa de servicios alrededor de shop-api"
+                  servicio shop-api, filtro env:course
 
 ### ¿Por qué?
 
-    ¿Qué dicen los logs de error?              LOG STREAM (en directo)       service:shop-api status:error
-    ¿Qué ha cambiado en Kubernetes?            EVENT TIMELINE                sources:kubernetes kube_namespace:datadog-curso
+    ¿Qué dicen los logs de error?
+        Widget:   Log Stream   —   título: "Errores en los logs de shop-api (en directo)"
+                  búsqueda:  service:shop-api status:error
+
+    ¿Qué ha cambiado en Kubernetes?
+        Widget:   Event Timeline   —   título: "Eventos de Kubernetes del namespace"
+                  búsqueda:  sources:kubernetes kube_namespace:datadog-curso
 
 ### ¿Tenemos recursos?
 
-    CPU de los pods vs. su límite              Timeseries: líneas            kubernetes.cpu.usage.total (/ 1e9 = núcleos)  vs  kubernetes.cpu.limits (discontinua)
-    Memoria de los pods vs. su límite          Timeseries: área + línea      kubernetes.memory.usage  vs  kubernetes.memory.limits (discontinua)
-    ¿Qué pods del clúster consumen más?        HEATMAP (mapa de calor)       avg:kubernetes.cpu.usage.total{kube_cluster_name:ivanosuna-cluster} by {pod_name}
-    ¿Qué nodo está más cargado?                HOST MAP (hexágonos)          avg:system.cpu.user{kube_cluster_name:ivanosuna-cluster} by {host}
+    ¿Cuánta CPU usan frente a su límite?
+        Widget:   Timeseries   —   título: "CPU de los pods de shop-api (núcleos) vs. límite"
+                  sum:kubernetes.cpu.usage.total{kube_namespace:datadog-curso,kube_deployment:shop-api} by {pod_name} / 1000000000   [line]
+                  sum:kubernetes.cpu.limits{kube_namespace:datadog-curso,kube_deployment:shop-api} by {pod_name}   [line]
+
+    ¿Cuánta memoria usan frente a su límite?
+        Widget:   Timeseries   —   título: "Memoria de los pods de shop-api vs. límite"
+                  sum:kubernetes.memory.usage{kube_namespace:datadog-curso,kube_deployment:shop-api} by {pod_name}   [area]
+                  sum:kubernetes.memory.limits{kube_namespace:datadog-curso,kube_deployment:shop-api} by {pod_name}   [line]
+
+    ¿Qué pods del clúster consumen más?
+        Widget:   Heatmap (mapa de calor)   —   título: "Mapa de calor: CPU de todos los pods del clúster"
+                  avg:kubernetes.cpu.usage.total{kube_cluster_name:ivanosuna-cluster} by {pod_name}
+
+    ¿Qué nodo está más cargado?
+        Widget:   Host Map (hexágonos)   —   título: "Nodos del clúster por CPU (hexágonos)"
+                  color:  avg:system.cpu.user{kube_cluster_name:ivanosuna-cluster} by {host}
 
 ---
 
