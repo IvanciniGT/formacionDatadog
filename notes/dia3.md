@@ -439,3 +439,99 @@ El día que llega la buena, está en la misma carpeta que las 400 falsas.
 
     Metric: sum(last_15m): sum:shop.orders.created{env:course,status:paid}.as_count() < 1
     + "Notify if data is missing" 15 min   <- ¡CLAVE! Sin pedidos pagados, la serie desaparece.
+
+---
+
+# EJERCICIOS DE MONITORES
+
+Todos: Monitors -> New Monitor -> <tipo>.  Nombre: <tu nombre> - Tienda - <qué vigila>
+Etiquetas en todos: owner:<tu nombre>, team:training, service:shop-api   (así salen en el dashboard)
+Destinatario en todos: @<tu nombre>.datadog@ivanosuna.com   (lo veis en https://mail.ionos.es)
+Al terminar cada uno: botón "Test Notifications" y mirar el correo.
+
+## Ejercicio 1. Pagos fallidos altos            [Metric con fórmula]   -> SALTA AHORA
+
+    Consulta:   a = sum:shop.orders.created{env:course,status:payment_failed}.as_count()
+                b = sum:shop.orders.created{env:course}.as_count()
+                fórmula:  a / b * 100
+    Evaluar:    la SUMA de los últimos 10 minutos
+    Umbrales:   alerta > 25  ·  aviso > 20  ·  recuperación < 15
+    Mensaje:    qué pasa ({{value}} % de pagos fallidos), impacto (ventas perdidas),
+                dónde mirar (APM -> POST /api/orders -> span payment.charge)
+    Esperado:   ALERTA (la tienda falla ~30 % a propósito) -> llega el email
+
+> ¿Por qué un %, y no "más de 50 pagos fallidos"?  (con poco tráfico nunca saltaría; con mucho, siempre)
+
+## Ejercicio 2. La tienda no vende             [Metric + SIN DATOS]   -> no salta (y es lo que queremos)
+
+    Consulta:   sum:shop.orders.created{env:course,status:paid}.as_count()
+    Evaluar:    la SUMA de los últimos 15 minutos
+    Umbral:     alerta < 1
+    OPCIÓN CLAVE: "Notify if data is missing for more than 15 minutes"
+    Esperado:   OK
+
+> Es el monitor que habría avisado del stock agotado del martes.
+> ¿Por qué hace falta "avisar si no hay datos"? Cuando no hay pedidos pagados, la serie status:paid
+  DEJA DE EXISTIR: no vale 0, no hay nada. Sin esa opción, el monitor se queda callado.
+
+## Ejercicio 3. Promesa en riesgo               [SLO alert: presupuesto]   -> SALTA EN AVISO
+
+    Desde: SLOs -> tu SLO (corregido: buenos = hits - errors, malos = errors) -> New Alert
+    Tipo:       Error Budget  (presupuesto CONSUMIDO)
+    Ventana:    7 días
+    Umbrales:   alerta > 75 %  ·  aviso > 50 %
+    Mensaje:    qué significa (incumplimos la promesa) y la decisión de PO
+                (¿estabilizamos o revisamos la promesa?)
+    Esperado:   AVISO (se lleva consumido algo más de la mitad)
+
+## Ejercicio 4. Endpoint lento, uno por uno       [APM, MULTI-ALERTA]   -> SALTA SOLO PARA /api/slow
+
+    Tipo:       APM -> servicio shop-api, env course, operación servlet.request
+    Medida:     latencia p95, agrupada POR RECURSO (resource_name)
+    Evaluar:    media de los últimos 5 minutos
+    Umbral:     alerta > 1 s
+    Mensaje:    usar {{resource_name.name}} para decir CUÁL:
+                "El endpoint {{resource_name.name}} tarda {{value}} s (p95)"
+    Esperado:   un "grupo" en ALERTA (GET /api/slow, ~2,8 s) y el resto OK
+
+> Multi-alerta: UN monitor, un estado POR ENDPOINT. ¿Os parece útil una alerta permanente en /api/slow?
+  (Es lento a propósito: o se excluye, o se le pone otro umbral. Esa decisión también es del PO.)
+
+## Ejercicio 5. Pagos rechazados en los logs     [Logs]   -> SALTA AHORA
+
+    Consulta:   service:shop-api "Payment rejected"
+    Medida:     número de logs
+    Evaluar:    los últimos 5 minutos
+    Umbrales:   alerta > 20  ·  aviso > 10
+    Opción:     "Include a sample of logs" -> el correo trae ejemplos de las líneas
+    Esperado:   ALERTA
+
+> Es el MISMO problema que el ejercicio 1, visto desde otra señal (logs en vez de métricas).
+  ¿Cuál preferís para avisar? ¿Por qué? (pista: el log depende de que nadie cambie el texto del mensaje)
+
+## Ejercicio 6 (extra). Clientes viendo errores  [RUM]   -> SALTA SI LO PROVOCÁIS
+
+    Consulta:   @type:error @session.type:user
+    Evaluar:    los últimos 15 minutos
+    Umbral:     alerta > 3
+    Provocarlo: abrid https://datadog.ivanosuna.com y pulsad 4 veces "Throw a JS error"
+    Esperado:   ALERTA unos minutos después
+
+## Ejercicio 7 (extra). Compra lenta Y hay tráfico   [Composite]
+
+    A = un monitor "p95 de POST /api/orders > 1 s"
+    B = un monitor "más de 10 peticiones a shop-api en 5 minutos"
+    Composite:  A && B
+> ¿Para qué? A las 4 am, con 2 peticiones, una compra lenta no debería despertar a nadie.
+
+## Al final: los monitores en el dashboard
+
+    - Abrid el dashboard "Ivan - Tienda (referencia)" -> pestaña Guardia -> "Alertas de shop-api":
+      vuestros monitores aparecen ahí por la etiqueta service:shop-api.
+    - Añadid a vuestro dashboard un widget ALERT GRAPH con vuestro monitor de pagos fallidos:
+      la gráfica con la línea del umbral pintada encima.
+
+> Preguntas de cierre:
+    - ¿Cuáles de vuestros monitores son sobre SÍNTOMAS y cuáles sobre CAUSAS?
+    - ¿Cuál despertaría a alguien a las 3 am? ¿Cuál solo merece un email?
+    - ¿Qué monitor de negocio le pediríais a vuestro equipo para vuestro producto de verdad?
