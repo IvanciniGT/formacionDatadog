@@ -712,3 +712,52 @@ Es la herramienta más cercana a un PO: es SU lenguaje. Ejemplos con la tienda:
 
 OJO: Sheets es reciente. En la org del curso (trial) puede salir como "preview" o no estar activado.
 Buscarlo con Cmd+K -> "Sheets". Si no aparece, se cuenta como concepto.
+
+---
+
+# TEXTO EN LOS DASHBOARDS: NOTAS Y SIMILARES
+
+No muestran datos... pero hacen que un dashboard SE ENTIENDA sin que nadie lo explique.
+
+## Widgets de texto
+
+    Note (nota)      recuadro de texto en MARKDOWN: negrita, listas, enlaces, tablas, emojis
+    Free Text        un TÍTULO grande, sin recuadro (para separar zonas)
+    Image            una imagen (un logo, un diagrama de la arquitectura)
+    Iframe           una página web incrustada (la wiki, un runbook)
+    Group            el título de un grupo también es texto: escribidlo como PREGUNTA
+
+## Opciones de una nota
+
+    Color de fondo        blanco, gris, azul, morado, rosa, naranja, amarillo, verde, rojo, transparente
+    Tamaño de letra       pequeño ... grande
+    Alineación            izquierda / centro / derecha · arriba / centro / abajo
+    FLECHA (tick)         el recuadro "señala" al widget de al lado (izquierda, derecha, arriba, abajo)
+                          -> como un bocadillo de cómic: "ojo con ESTE widget"
+    Markdown              **negrita**, listas, [enlaces](url), tablas | a | b |, `código`
+
+## Para qué usarlas (convención de colores)
+
+    Gris      PORTADA: para quién es, quién lo mantiene, qué contesta            (arriba de cada pestaña)
+    Amarillo  AVISO sobre un dato: "este importe incluye no pagados"            (con flecha al widget)
+    Rojo      QUÉ HACER si algo está en rojo: los primeros pasos (runbook corto)
+    Azul      ENLACES: al SLO, a los tests, a la página del servicio
+    Morado    ENLACES para investigar más: logs, APM, eventos
+    Verde     GLOSARIO: qué significa cada término (una tablita en markdown)
+    Naranja   CÓMO LEER una gráfica: "la línea discontinua es el límite"         (con flecha)
+
+## En el dashboard de ejemplo (Ivan - Tienda)
+
+    Pestaña NEGOCIO
+      - Portada (gris)                         arriba de todo
+      - "VENTAS" (Free Text)                   título grande del primer grupo
+      - "Ojo con este importe" (amarillo)      con flecha hacia el importe total
+      - "Enlaces útiles" (azul)                en "¿Cumplimos la promesa?"
+      - "Glosario" (verde, con tabla)          en "¿Quién nos visita?"
+    Pestaña GUARDIA
+      - Portada (gris)
+      - "Si algo está en ROJO" (rojo)          al principio de "¿Está roto?"
+      - "Para investigar más" (morado)         en "¿Por qué?"
+      - "La línea discontinua es el límite"    (naranja, con flecha) en "¿Tenemos recursos?"
+
+Regla: si para entender un dashboard hace falta que alguien te lo explique... le faltan notas.
