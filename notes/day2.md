@@ -78,22 +78,22 @@ Lo alguien tiene que poner eso a mano NO SE HARÁ. Eso será parte de los pipeli
 Al desplegar un sistema, esa herramienta / sistema tiene varios COMPONENTES! Y asu vez cada componente tiene subcomponentes o subsistemas..
 
 En nuestro caso: Tenemos el sistema de la tienda.
-  - shop-web
-      - Se ejecuta en una máquina física
-      - Dentro de la máquina hay un pod/contenedor
-      - Dentro del contenedor tenemos una JVM (Java Virtual Machine)
-      - Dentro de la JVM tenemos un Servidor de aplciaciones (TOMCAT)
-      - Dentro del Servidor de aplicaciones tenemos nuestra aplicación web (shop-web)
+  - shop-web    (nginx: sirve la página web y reenvía /api al backend)
   - shop-api
-  - shop-db
+      - Se ejecuta en una máquina física
+      - Dentro de la máquina hay un pod/contenedor
+      - Dentro del contenedor tenemos una JVM (Java Virtual Machine)
+      - Dentro de la JVM tenemos un Servidor de aplciaciones (TOMCAT)
+      - Dentro del Servidor de aplicaciones tenemos nuestra aplicación (shop-api)
+  - shop-db     (postgres)
 
-Centrándonos solo en el shop-web. De dónde quiero recoger METRICAS?
+Centrándonos solo en el shop-api. De dónde quiero recoger METRICAS?
 
       - Se ejecuta en una máquina física
       - Dentro de la máquina hay un pod/contenedor
       - Dentro del contenedor tenemos una JVM (Java Virtual Machine)
       - Dentro de la JVM tenemos un Servidor de aplciaciones (TOMCAT)
-      - Dentro del Servidor de aplicaciones tenemos nuestra aplicación web (shop-web)
+      - Dentro del Servidor de aplicaciones tenemos nuestra aplicación (shop-api)
 
 La respuesta es: DE TODOS ELLOS!
 
@@ -105,7 +105,7 @@ La respuesta es: DE TODOS ELLOS!
         - Métricas de la JVM (CPU, memoria asignada, memoria uso, GC, hilos-THREADS)
       - Dentro de la JVM tenemos un Servidor de aplciaciones (TOMCAT)
         - Métricas del servidor de aplicaciones (ejecutores, pool de conexiones a BBDD, queue de peticiones)
-      - Dentro del Servidor de aplicaciones tenemos nuestra aplicación web (shop-web)
+      - Dentro del Servidor de aplicaciones tenemos nuestra aplicación (shop-api)
         - Métricas de NEGOCIO:  
           - Número de ventas
           - Ingresos generados
@@ -289,7 +289,7 @@ Ese catálogo puede ser simplemente un fichero con una tabla!
 | Tipo de operación | Metadatos requeridos                    | Descripción                                                            |
 |-------------------|-----------------------------------------|------------------------------------------------------------------------|
 | order.placed      | id, customer, producto, cantidad, talla | Se registra cuando se crea un nuevo pedido en el sistema.              |
-| order.failed      | id, customer, channel, amount           | Se registra cuando un pago falla en el sistema.                        |
+| payment.failed    | id, customer, channel, amount           | Se registra cuando un pago falla en el sistema.                        |
 
 ## Logs estandar
 
@@ -439,12 +439,20 @@ De una app no se ejecuta una única instancia... se ejecutan muchas en paralelo 
 ESTO LO TRATARIAMOS COMO UN EVENTO!
 
 Datadog tiene su API para dar de alta eventos.
-Se lo puedo pedir al agente:
+Desde cualquier sitio (un script, un pipeline) con una llamada HTTP:
 ```bash
-datadog-agent event post "Despliegue de nueva versión" \
-  --text "ARRANCANDO EL SISTEMA en versión 1.2.4" \
-  --tags "app:mi_app,env:produccion,version:1.2.4"
+curl -X POST "https://api.datadoghq.eu/api/v1/events" \
+  -H "DD-API-KEY: $DD_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+        "title": "Despliegue de nueva versión",
+        "text":  "ARRANCANDO EL SISTEMA en versión 1.2.4",
+        "tags":  ["service:mi_app", "env:produccion", "version:1.2.4"]
+      }'
 ```
+OJO: las etiquetas son las UST (service, env, version). Si el evento no lleva service:mi_app,
+no aparecerá en las gráficas de ese servicio.
+En un pipeline de despliegue, lo habitual es:  datadog-ci deployment mark --service mi_app --env produccion --revision 1.2.4
 
 O desde código JAVA por ejemplo.
 
