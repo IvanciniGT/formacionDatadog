@@ -1,5 +1,121 @@
 # Día 3
 
+# EJEMPLO DE DASHBOARD: "Ivan - Tienda (referencia)"
+
+https://app.datadoghq.eu/dashboard/s9r-yur-pc5/ivan---tienda-referencia
+
+UN dashboard con DOS PESTAÑAS (una por perfil), y en cada pestaña GRUPOS que contestan UNA PREGUNTA.
+Variable de plantilla:  $env  (por defecto: course)   -> el mismo dashboard vale para prod, pre, dev...
+
+Regla de diseño:  PREGUNTA  ->  TIPO DE DATO  ->  WIDGET  ->  CONSULTA
+
+---
+
+## PESTAÑA 1: NEGOCIO   (para: dirección comercial, reunión de los lunes)
+
+### ¿Cuánto vendemos?
+
+    Pregunta                                   Widget                        Consulta
+    ----------------------------------------   ---------------------------   --------------------------------------------------------------------
+    ¿Cuántos pedidos pagados llevamos hoy?     Query Value (número grande)   sum:shop.orders.created{$env,status:paid}.as_count()     [rango: 1 día]
+    ¿Qué % de compras sale bien?               Query Value + SEMÁFORO        a = ...{status:paid}.as_count()   b = ...{*}.as_count()   a / b * 100
+                                               (formato condicional)           verde >= 65 · amarillo >= 50 · rojo < 50
+    ¿Cuánto importe suman los pedidos?         Query Value                   sum:shop.orders.value{$env}
+                                                                             OJO: ¡INCLUYE LOS NO PAGADOS! La métrica no lleva status.
+                                                                             -> Es un dato que HAY QUE PEDIR bien al equipo.
+    ¿Vendemos más o menos que ayer?            Timeseries: barras (hoy)      sum:shop.orders.created{$env,status:paid}.as_count()
+                                               + línea discontinua (ayer)    timeshift(... , -86400)    <- la misma, 1 día antes
+    ¿Cuántos pedidos van bien y cuántos no?    Timeseries: ÁREA APILADA      sum:shop.orders.created{$env} by {status}.as_count()
+                                               + rayas de EVENTOS            eventos: sources:kubernetes kube_namespace:datadog-curso
+
+### ¿Qué se vende?
+
+    ¿Qué categoría vende más?                  Sunburst (TARTA)              sum:shop.orders.created{$env,status:paid} by {category}.as_count()
+    ¿Qué categoría trae más importe?           TREEMAP                       sum:shop.orders.value{$env} by {category}
+    Resumen por categoría                      TABLA (Query Table)           pagados, pago fallido, % fallo = fal / (pag + fal) * 100, ticket medio
+    ¿De cuánto es un pedido normal?            Query Value                   avg:shop.orders.value{$env}            (ticket medio)
+    ¿Y el pedido más grande?                   Query Value                   max:shop.orders.value{$env}            (ticket máximo)
+                                                                             (el p95 necesita ACTIVAR PERCENTILES en la métrica:
+                                                                              se activan, se pagan, y solo calculan DESDE ESE MOMENTO)
+
+### ¿Cumplimos la promesa? ¿Funciona desde fuera?
+
+    ¿Cumplimos el SLO? ¿Cuánto margen queda?   SLO                           "Ivan - Tienda - Peticiones Procesadas Correctamente" (7 días)
+    ¿Se puede comprar ahora desde fuera?       MONITOR SUMMARY               monitores type:synthetics (los robots de Fráncfort, París y Dublín)
+
+### ¿Quién nos visita y desde dónde?  (RUM, últimos 7 días)
+
+    ¿Desde qué países?                         GEOMAP (mapa del mundo)       RUM: @type:session  agrupado por @geo.country_iso_code
+    ¿Cuántos clientes reales?                  Query Value                   RUM: @type:session @session.type:user
+    ¿Y cuántas visitas son del robot?          Query Value                   RUM: @type:session @session.type:synthetics
+    ¿Personas o robots, a lo largo del tiempo? Timeseries: barras            RUM: @type:session  agrupado por @session.type
+
+---
+
+## PESTAÑA 2: GUARDIA   (para: quien está de guardia · orden: errores -> latencia -> tráfico -> recursos)
+
+### ¿Está roto? ¿Va lento?
+
+    ¿Qué % de peticiones falla?                Query Value + SEMÁFORO        errors / hits * 100   (trace.servlet.request.errors / .hits)
+                                                                               verde < 2 · amarillo < 5 · rojo >= 5
+    ¿Cuánto tarda comprar (p95)?               Query Value + SEMÁFORO        p95:trace.servlet.request{...,resource_name:post_/api/orders}
+                                                                               verde < 1 s · rojo >= 1 s
+    ¿Hay alertas saltando?                     MONITOR SUMMARY               monitores con service:shop-api
+    Todo el servicio de un vistazo             SERVICE SUMMARY (APM)         shop-api / servlet.request: peticiones, errores, latencia,
+                                                                             desglose, distribución y lista de endpoints. TODO EN UNO.
+
+### ¿Dónde está el problema?
+
+    ¿Qué endpoint falla o tarda más?           TABLA (Query Table)           por resource_name: peticiones, errores, % error, p95
+    ¿Cuáles son muy usados Y lentos?           SCATTER PLOT (dispersión)     x = peticiones por endpoint · y = p95 por endpoint
+                                                                             -> arriba a la derecha: los que más duelen
+    ¿Cómo se reparten los tiempos de compra?   DISTRIBUTION (histograma)     histogram:trace.servlet.request{...,resource_name:post_/api/orders}
+    ¿Qué endpoint da errores y cuándo?         Timeseries: barras + eventos  sum:trace.servlet.request.errors{...} by {resource_name}.as_count()
+    ¿Es el proveedor de pagos?                 Timeseries: líneas            avg:shop.payment.duration.avg{env:course} by {status}
+                                               + MARCADOR (umbral 500 ms)
+
+### Mapa del sistema
+
+    ¿Quién llama a quién?                      SERVICE MAP                   los servicios alrededor de shop-api (shop-web, postgres...)
+
+### ¿Por qué?
+
+    ¿Qué dicen los logs de error?              LOG STREAM (en directo)       service:shop-api status:error
+    ¿Qué ha cambiado en Kubernetes?            EVENT TIMELINE                sources:kubernetes kube_namespace:datadog-curso
+
+### ¿Tenemos recursos?
+
+    CPU de los pods vs. su límite              Timeseries: líneas            kubernetes.cpu.usage.total (/ 1e9 = núcleos)  vs  kubernetes.cpu.limits (discontinua)
+    Memoria de los pods vs. su límite          Timeseries: área + línea      kubernetes.memory.usage  vs  kubernetes.memory.limits (discontinua)
+    ¿Qué pods del clúster consumen más?        HEATMAP (mapa de calor)       avg:kubernetes.cpu.usage.total{kube_cluster_name:ivanosuna-cluster} by {pod_name}
+    ¿Qué nodo está más cargado?                HOST MAP (hexágonos)          avg:system.cpu.user{kube_cluster_name:ivanosuna-cluster} by {host}
+
+---
+
+## Los widgets usados (y para qué tipo de dato)
+
+    Note                 texto: para quién es, qué contesta, quién lo mantiene
+    Group                agrupa widgets bajo una pregunta (plegable)
+    Query Value          UN número (+ semáforo con formato condicional)
+    Timeseries           evolución en el tiempo: líneas, barras, área (apilada)
+                         + overlay de EVENTOS (rayas) + MARCADORES (umbrales)
+    Sunburst             tarta: reparto de una variable CUALITATIVA (tabla de frecuencias)
+    Treemap              reparto de una CUANTITATIVA por categorías (área proporcional)
+    Query Table          tabla: varias medidas por cada valor de una etiqueta
+    Distribution         histograma de una CUANTITATIVA (con percentiles)
+    Scatter Plot         CUANTITATIVA x CUANTITATIVA (cada punto = un grupo)
+    Heatmap              distribución a lo largo del TIEMPO (muchas series a la vez)
+    Geomap               valor por PAÍS
+    Host Map             hexágonos: una medida por máquina
+    SLO                  estado de un SLO y su presupuesto de error
+    Monitor Summary      lista y recuento de monitores por estado
+    Service Summary      el resumen de APM de un servicio
+    Service Map          mapa de dependencias entre servicios
+    Log Stream           lista de logs en directo
+    Event Timeline       eventos en el tiempo
+
+---
+
 ## Notificaciones por email: monitores y alertas de SLO
 
 ### Cómo avisa Datadog
