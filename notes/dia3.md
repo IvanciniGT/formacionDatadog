@@ -34,7 +34,7 @@ El email NO necesita integración: viene de serie. El resto se configura en Inte
 
     Se crean desde la página del SLO: botón "New Alert" / "Set up alerts".
 
-### Lo que hemos creado (cuenta de Ivan)
+### Lo que vamos a crear en clase (cuenta de Ivan)
 
     1. Ivan - Tienda - Presupuesto de error del SLO casi agotado      (alerta de SLO)
          sobre:   Ivan - Tienda - Peticiones Procesadas Correctamente
