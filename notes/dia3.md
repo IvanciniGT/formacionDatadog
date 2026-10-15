@@ -777,3 +777,41 @@ No muestran datos... pero hacen que un dashboard SE ENTIENDA sin que nadie lo ex
       - "La línea discontinua es el límite"    (naranja, con flecha) en "¿Tenemos recursos?"
 
 Regla: si para entender un dashboard hace falta que alguien te lo explique... le faltan notas.
+
+---
+
+# LOS MONITORES QUE YA HAY PARA LA TIENDA (y salen en el dashboard)
+
+Los creó Ivan (por API) como REFERENCIA. No mandan correos a nadie (en el mensaje llevan @nobody).
+Salen en el dashboard "Ivan - Tienda (referencia)" en dos widgets de tipo MONITOR SUMMARY:
+
+    "Alertas de shop-api"          pestaña GUARDIA    búsqueda:  service:shop-api    -> 6 monitores
+    "Robots (tests sintéticos)"    pestaña NEGOCIO    búsqueda:  type:synthetics     -> 2 monitores
+
+Los que creéis vosotros saldrán también en "Alertas de shop-api" SI LES PONÉIS la etiqueta  service:shop-api
+
+## Pestaña GUARDIA: "Alertas de shop-api"
+
+| Monitor (en español)                  | Nombre en Datadog                                   | Tipo                        | Qué vigila                                                                 | Umbrales                          | Estado habitual | Para qué sirve en clase |
+|---------------------------------------|-----------------------------------------------------|-----------------------------|----------------------------------------------------------------------------|-----------------------------------|-----------------|-------------------------|
+| Tasa de errores de la tienda          | ivan - [shop] shop-api error rate                   | Métrica con fórmula         | % de peticiones con error: errores / peticiones x 100, últimos 10 min     | alerta > 20 % · aviso > 10 %      | 🟢 OK (~4 %)     | Un SÍNTOMA bien elegido: errores como TASA, no como número |
+| Pico de pagos rechazados              | ivan - [shop] payment rejections spike              | Logs                        | Cuántas líneas "Payment rejected" aparecen en los logs en 5 min            | alerta > 20 · aviso > 10          | 🔴 Alerta        | El mismo problema que los pagos fallidos, visto desde los LOGS |
+| Volumen de pedidos fuera de lo normal | ivan - [shop] orders volume anomaly                 | Anomalía                    | Pedidos por debajo de la banda "normal" que Datadog aprende para cada hora | fuera de la banda (2 desviaciones) | 🟢 OK            | Umbral que APRENDE (estacionalidad). Necesita historia: aquí solo hay unos días |
+| Compra lenta, endpoint a endpoint     | ivan - [shop] shop-api p95 latency high on {{resource_name.name}} | Métrica, MULTI-ALERTA | p95 de la latencia POR ENDPOINT, media de 5 min                           | alerta > 1 s · aviso > 0,7 s      | 🔴 Alerta (solo /api/slow) | MULTI-ALERTA: un estado por endpoint. /api/slow es lento a propósito: ¿se excluye o se acepta? |
+| Latencia alta Y hay tráfico           | ivan - [shop] latency high AND traffic present      | Compuesto (A Y B)           | Salta solo si la latencia es alta Y además hay tráfico real                | combina los dos monitores         | ⚪ Sin datos     | Evitar avisos a las 4 am por una petición suelta. Ahora está en "sin datos": revisarlo antes de enseñarlo |
+| Hay tráfico (pieza auxiliar)          | ivan - [shop] shop-api has traffic                  | Métrica                     | Más de 10 peticiones en 5 min                                              | alerta > 10                       | 🔴 Alerta        | Es la pieza B del compuesto. MAL DISEÑO para un panel: "alerta" aquí significa BUENA noticia (hay tráfico) |
+
+## Pestaña NEGOCIO: "Robots (tests sintéticos)"
+
+| Monitor (en español)             | Nombre en Datadog                        | Tipo        | Qué vigila                                                                      | Estado habitual | Para qué sirve en clase |
+|----------------------------------|------------------------------------------|-------------|---------------------------------------------------------------------------------|-----------------|-------------------------|
+| El catálogo responde             | [Synthetics] ivan - shop api products    | Sintético de API | Un robot pide el catálogo de productos cada 5 min desde Fráncfort, París y Dublín: responde 200, en < 1 s, con JSON | 🟢 OK | "¿Funciona desde fuera?" sin que haya clientes |
+| Se puede comprar                 | [Synthetics] ivan - shop checkout journey | Sintético de navegador | Un robot abre la tienda en un navegador cada 15 min, se identifica, compra y comprueba que el pedido aparece | 🟢 OK | El recorrido de compra completo, probado como lo haría un cliente |
+
+## Lo que enseñan (y lo que NO hay que copiar)
+
+    ✔ Errores como tasa, latencia con percentiles, multi-alerta por endpoint, el mismo problema desde métricas y desde logs.
+    ✔ Sintéticos: comprobar desde fuera, antes de que lo note un cliente.
+    ✘ "Hay tráfico" en ROJO cuando todo va bien: confunde. Una alerta tiene que significar SIEMPRE algo malo.
+    ✘ Un compuesto en "sin datos": un monitor que nadie revisa es ruido.
+    ✘ Nombres en inglés y con [shop]: para un equipo de negocio, mejor  "Tienda - Pagos fallidos altos".
