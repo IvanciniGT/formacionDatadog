@@ -131,8 +131,13 @@ Si quiero comparar versiones en un histograma: AGRUPO por la etiqueta  -> ... by
 
     2. EL PIPELINE (automático): un paso al final del pipeline de despliegue
        hace esa misma llamada al API, o ejecuta:
-           datadog-ci deployment mark --service shop-api --env course --revision 1.0.5
-       Es la misma llamada, pero la lanza el pipeline EN CADA DESPLIEGUE. Es lo correcto.
+           datadog-ci tag --level job --tags datadog_cd_visibility.is_deployment:true \
+               --tags datadog_cd_visibility.service:shop-api --tags datadog_cd_visibility.env:course \
+               --tags datadog_cd_visibility.revision:1.0.6
+       (la documentación lo llama `datadog-ci deployment mark`; en las versiones actuales ese comando
+        no aparece y se hace así, con `datadog-ci tag`. Es lo que hace nuestro pipeline: jobs marcar-shop-api
+        y marcar-shop-web, al final de cada despliegue)
+       Lo lanza el pipeline EN CADA DESPLIEGUE. Es lo correcto.
 
     3. Sin evento: si el pipeline pone bien la etiqueta version, APM marca el cambio
        en SUS gráficas (pero no aparece como evento en mis dashboards).
@@ -156,14 +161,14 @@ Es OTRA COSA, relacionada:
     Evento de despliegue      el pipeline llama al API             raya en cualquier dashboard                 Events (incluido)
     Software Delivery         GitLab / GitHub / Jenkins mandan     CI VISIBILITY: cada ejecución del pipeline  De pago, aparte
                               cada ejecución del pipeline            como una traza: etapas, duración, fallos
-                              + datadog-ci deployment mark         DEPLOYMENTS / DORA:
+                              + el job de despliegue MARCADO       DEPLOYMENTS / DORA:
                                                                      - cada cuánto desplegamos
                                                                      - tiempo de un commit a producción
                                                                      - % de despliegues que fallan
                                                                      - tiempo en recuperar el servicio
 
 Conectar GitLab con Datadog (webhook) -> Datadog ve LAS EJECUCIONES de los pipelines.
-Pero NO SABE cuál acabó en un despliegue a producción hasta que el pipeline se lo dice (datadog-ci deployment mark).
+Pero NO SABE cuál acabó en un despliegue a producción hasta que el pipeline se lo dice (marcando ese job con datadog-ci tag).
 
 Y como ese registro lleva service y env, Datadog sigue la cadena entera:
 

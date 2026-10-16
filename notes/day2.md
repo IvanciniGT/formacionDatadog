@@ -452,7 +452,12 @@ curl -X POST "https://api.datadoghq.eu/api/v1/events" \
 ```
 OJO: las etiquetas son las UST (service, env, version). Si el evento no lleva service:mi_app,
 no aparecerá en las gráficas de ese servicio.
-En un pipeline de despliegue, lo habitual es:  datadog-ci deployment mark --service mi_app --env produccion --revision 1.2.4
+En un pipeline de despliegue, lo habitual es que un paso al final marque el job como DESPLIEGUE con la herramienta datadog-ci:
+    datadog-ci tag --level job --tags datadog_cd_visibility.is_deployment:true \
+        --tags datadog_cd_visibility.service:mi_app --tags datadog_cd_visibility.env:produccion \
+        --tags datadog_cd_visibility.revision:1.2.4
+(La documentación habla de `datadog-ci deployment mark`, que hace exactamente eso; en las versiones actuales
+ de datadog-ci ese comando no aparece, así que en nuestra tienda se hace con `datadog-ci tag`.)
 
 O desde código JAVA por ejemplo.
 
